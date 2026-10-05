@@ -141,18 +141,20 @@ To add an agent, give its ACP command:
 ### Float the popup in a tiling window manager
 
 The title of a popup frame is `aside · PROJECT`. Make a rule that floats
-windows whose title starts with `aside`.
+Emacs windows with that title. Hyprland matches the full title, so the
+pattern must end with `.*`.
 
 Hyprland, Lua configuration:
 
 ```lua
-hl.window_rule({ match = { title = "^aside" }, float = true, center = true })
+hl.window_rule({ match = { class = "[Ee]macs", title = "aside · .*" },
+                 float = true, center = true })
 ```
 
 Hyprland, hyprlang configuration:
 
 ```conf
-windowrule = float on, center on, match:title ^aside
+windowrule = float on, center on, match:class [Ee]macs, match:title aside · .*
 ```
 
 Sway and i3:
