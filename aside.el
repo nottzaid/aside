@@ -7,7 +7,7 @@
 ;; Version: 0.3.0
 ;; Package-Requires: ((emacs "30.1"))
 ;; Keywords: tools, convenience
-;; URL: https://github.com/nottzaid/emacs-oc
+;; URL: https://github.com/nottzaid/aside
 
 ;; This file is not part of GNU Emacs.
 

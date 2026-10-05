@@ -4,7 +4,7 @@
 ;; SPDX-License-Identifier: MIT
 
 ;; Author: nottzaid
-;; URL: https://github.com/nottzaid/emacs-oc
+;; URL: https://github.com/nottzaid/aside
 
 ;; This file is not part of GNU Emacs.
 

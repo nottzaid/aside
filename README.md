@@ -26,7 +26,7 @@ add other ACP agents.
 
 ```elisp
 (use-package aside
-  :vc (:url "https://github.com/nottzaid/emacs-oc")
+  :vc (:url "https://github.com/nottzaid/aside")
   :bind (("C-c o" . aside)
          ("C-c h" . aside-toggle)))
 ```
