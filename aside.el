@@ -462,13 +462,21 @@ ACP announces many capabilities as empty objects, which count."
 ;;;; The prompt
 
 (defun aside--placeholder-text ()
-  "Return the hint shown in an empty prompt."
+  "Return the hint shown in an empty prompt.
+It says how to send and close, and which keys change the session."
   (let ((send (if (bound-and-true-p evil-local-mode) ":w" "C-c C-c"))
-        (close (if (bound-and-true-p evil-local-mode) ":q" "C-c C-k")))
+        (close (if (bound-and-true-p evil-local-mode) ":q" "C-c C-k"))
+        (dot (concat " " (aside-turn-glyph 'dot) " ")))
     (concat (propertize (format "Ask %s" (aside--agent-name aside--agent))
                         'face 'aside-placeholder 'cursor t)
-            (propertize (format "   %s sends · %s closes" send close)
-                        'face 'aside-placeholder))))
+            (propertize (format "   %s sends%s%s closes" send dot close)
+                        'face 'aside-placeholder)
+            "\n" (aside--prompt-bar)
+            (mapconcat (lambda (pair)
+                         (concat (propertize (car pair) 'face 'aside-key)
+                                 (propertize (concat " " (cdr pair)) 'face 'aside-placeholder)))
+                       '(("C-c C-m" . "model") ("C-c C-e" . "effort") ("C-c C-o" . "options"))
+                       (propertize dot 'face 'aside-placeholder)))))
 
 (defun aside--prompt-bar ()
   "Return the bar drawn beside your prompt.
@@ -1272,13 +1280,30 @@ The most recent comes first, and RET on an empty prompt picks it."
       "  ")
      'face 'aside-summary)))
 
+(defun aside--mode-line-button (text command help)
+  "Return TEXT for the mode line, running COMMAND on a click; HELP explains it."
+  (propertize (truncate-string-to-width text 28 nil nil (aside-turn-glyph 'more))
+              'mouse-face 'mode-line-highlight
+              'help-echo help
+              'local-map (make-mode-line-mouse-map 'mouse-1 command)))
+
 (defun aside--mode-line ()
-  "Return the popup's mode line."
-  (let* ((parts (delq nil (list (aside--option-label "model") (aside--option-label "mode"))))
+  "Return the popup's mode line.
+The model, effort and mode it names can be clicked to change them."
+  (let* ((model (aside--option-label "model"))
+         (effort (aside--option-label "thought_level"))
+         (mode (aside--option-label "mode"))
+         (parts
+          (delq nil
+                (list (and model (aside--mode-line-button
+                                  model #'aside-select-model "mouse-1: choose the model"))
+                      (and effort (aside--mode-line-button
+                                   (concat effort " effort") #'aside-select-effort
+                                   "mouse-1: choose the reasoning effort"))
+                      (and mode (aside--mode-line-button
+                                 mode #'aside-set-option "mouse-1: change an option")))))
          (left (concat " " (propertize (aside--agent-name aside--agent) 'face 'aside-mode-line-agent)
-                       (mapconcat (lambda (part)
-                                    (concat " " (aside-turn-glyph 'dot) " "
-                                            (truncate-string-to-width part 28 nil nil "…")))
+                       (mapconcat (lambda (part) (concat " " (aside-turn-glyph 'dot) " " part))
                                   parts "")))
          (right (aside--mode-line-status)))
     (concat (aside--mode-line-escape left)
@@ -1287,12 +1312,13 @@ The most recent comes first, and RET on an empty prompt picks it."
 
 (defun aside--mode-line-escape (string)
   "Escape the % signs in STRING, which the mode line reads as directives.
-Each run of text keeps its face."
+Each run of text keeps its properties."
   (let ((pos 0) (runs nil))
     (while (< pos (length string))
-      (let ((next (next-single-property-change pos 'face string (length string))))
-        (push (propertize (string-replace "%" "%%" (substring-no-properties string pos next))
-                          'face (get-text-property pos 'face string))
+      (let ((next (or (next-property-change pos string) (length string))))
+        (push (apply #'propertize
+                     (string-replace "%" "%%" (substring-no-properties string pos next))
+                     (text-properties-at pos string))
               runs)
         (setq pos next)))
     (apply #'concat (nreverse runs))))
@@ -1331,6 +1357,7 @@ Each run of text keeps its face."
   "C-c C-c" #'aside-send
   "C-c C-k" #'aside-cancel
   "C-c C-m" #'aside-select-model
+  "C-c C-e" #'aside-select-effort
   "C-c C-o" #'aside-set-option
   "C-c C-n" #'aside-new-session
   "C-c C-r" #'aside-resume
@@ -1534,6 +1561,18 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
   (aside--choose-value (or (aside--option "model")
                            (user-error "%s doesn't offer a choice of model"
                                        (aside--agent-name aside--agent)))))
+
+(defun aside-select-effort ()
+  "Choose how hard the model reasons, when the model offers a choice."
+  (interactive nil aside-mode)
+  (aside--require-session)
+  (aside--choose-value
+   (or (aside--option "thought_level")
+       ;; Spelled out: Emacs would write C-c C-m as "C-c RET".
+       (user-error "%s offers no reasoning effort with %s.  Models that reason \
+do; choose one with C-c C-m"
+                   (aside--agent-name aside--agent)
+                   (or (aside--option-label "model") "this model")))))
 
 (defun aside-set-option ()
   "Change one of the session's options, such as its mode or reasoning effort."

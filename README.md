@@ -89,10 +89,18 @@ When aside asks you to choose, it shows all the choices:
 | `C-c C-k` | | Stop the agent. If the agent is idle, hide the popup. |
 | | `:q`, `q` | Hide the popup. The agent continues. |
 | `C-c C-m` | | Select the model. |
-| `C-c C-o` | | Set an option of the session, for example the mode. |
+| `C-c C-e` | | Select the reasoning effort, if the model has one. |
+| `C-c C-o` | | Set an option of the session, for example the mode or the effort. |
 | `C-c C-n` | | Start a new session. With `C-u`, select the agent. |
 | `C-c C-r` | | Resume an earlier session. |
 | `C-c C-x` | | Remove the attached regions. |
+
+An empty prompt shows the keys for the model, the effort and the options.
+The mode line shows the agent, the model, the effort and the mode. Click
+the model, the effort or the mode to change it.
+
+Some models do not reason, and have no effort. For example, OpenCode's
+Big Pickle has none, but its DeepSeek and GLM models have one.
 
 ### Commands
 

@@ -381,6 +381,58 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
         (should (string-search "\"configId\":\"mode\"" (car sent)))
         (should (string-search "\"value\":\"plan\"" (car sent)))))))
 
+(defun aside-test--key-for (label prompt)
+  "Return the key PROMPT's menu shows beside LABEL."
+  (and (string-match (format "\\([[:alnum:]]\\)  \\(?:[^ ] \\)?%s\\>" (regexp-quote label))
+                     prompt)
+       (string-to-char (match-string 1 prompt))))
+
+(ert-deftest aside-effort-is-a-key-away ()
+  "C-c C-e chooses the reasoning effort, or says why there is none."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (let ((err (should-error (aside-select-effort) :type 'user-error)))
+        (should (string-search "OpenCode offers no reasoning effort with Big Pickle"
+                               (cadr err)))
+        (should (string-search "C-c C-m" (cadr err))))))
+  (aside-test--with-agent (claude "claude-session")
+    (with-current-buffer (aside-test--open dir)
+      (should (string-search "Xhigh effort" (aside--mode-line)))
+      (let (sent shown)
+        (add-hook 'aside-acp-trace-functions
+                  (lambda (_ direction line)
+                    (when (and (eq direction 'out) (string-search "set_config_option" line))
+                      (push line sent))))
+        (unwind-protect
+            (cl-letf (((symbol-function 'read-char-choice)
+                       (lambda (prompt _keys &rest _)
+                         (setq shown (substring-no-properties prompt))
+                         (aside-test--key-for "Low" shown))))
+              (aside-select-effort))
+          (setq aside-acp-trace-functions nil))
+        (should (string-search "Effort" shown))
+        (should (string-search "\"configId\":\"effort\"" (car sent)))
+        (should (string-search "\"value\":\"low\"" (car sent)))))))
+
+(ert-deftest aside-mode-line-parts-can-be-clicked ()
+  "The model, effort and mode in the mode line open their choices."
+  (aside-test--with-agent (claude "claude-session")
+    (with-current-buffer (aside-test--open dir)
+      (let ((line (aside--mode-line)))
+        (dolist (pair '(("Opus 5.5" . aside-select-model)
+                        ("Xhigh effort" . aside-select-effort)
+                        ("Manual" . aside-set-option)))
+          (let ((map (get-text-property (string-search (car pair) line) 'local-map line)))
+            (should (eq (lookup-key map [mode-line mouse-1]) (cdr pair)))))))))
+
+(ert-deftest aside-empty-prompt-shows-the-keys ()
+  "The hint in an empty prompt names the keys that change the session."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (let ((hint (substring-no-properties (overlay-get aside--placeholder 'after-string))))
+        (dolist (text '("C-c C-m model" "C-c C-e effort" "C-c C-o options" "Ask OpenCode"))
+          (should (string-search text hint)))))))
+
 ;;;; The transport
 
 (ert-deftest aside-acp-reassembles-split-lines ()
