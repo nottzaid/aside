@@ -9,10 +9,11 @@ BATCH = $(EMACS) --batch -Q -L . -L test $(foreach dir,$(LOAD_PATH),-L $(dir))
 all: compile test
 
 # Byte-compile everything, treating warnings as errors.
+# The .elc files go even when compiling fails, so tests never load stale ones.
 compile:
-	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' \
-	  -f batch-byte-compile aside*.el test/*.el
-	@rm -f *.elc test/*.elc
+	@$(BATCH) --eval '(setq byte-compile-error-on-warn t)' \
+	  -f batch-byte-compile aside*.el test/*.el; \
+	  status=$$?; rm -f *.elc test/*.elc; exit $$status
 
 # Replay recorded agent sessions through the real popup.  Fast; no quota.
 test:
