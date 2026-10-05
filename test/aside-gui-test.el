@@ -81,18 +81,20 @@ unbroken even past keycaps or symbols from taller fonts."
   (run-at-time 0.3 nil (lambda () (setq unread-command-events events))))
 
 (ert-deftest aside-gui-menu-answers-with-one-key ()
-  "A menu lists every choice and returns the one whose key is pressed."
+  "A menu lists every choice and returns the one whose key is pressed.
+Once answered, it leaves nothing in the echo area or in *Messages*."
   (skip-unless (display-graphic-p))
   (let (shown)
     (run-at-time 0.3 nil (lambda ()
-                           (setq shown (minibuffer-contents-no-properties)
-                                 shown (with-current-buffer (window-buffer (minibuffer-window))
+                           (setq shown (with-current-buffer (window-buffer (minibuffer-window))
                                          (buffer-string)))
                            (setq unread-command-events (list ?p))))
     (should (eq (aside--menu "Mode" '(("Build" build) ("Plan" plan "Read only")) 'build)
                 'plan))
     (should (string-search "Plan" shown))
-    (should (string-search "Read only" shown))))
+    (should (string-search "Read only" shown))
+    (should-not (current-message))
+    (should-not (with-current-buffer (messages-buffer) (string-search "press a key" (buffer-string))))))
 
 (ert-deftest aside-gui-completion-shows-the-list-and-ignores-case ()
   "Long lists show at once in the popup, match any case, and default on RET."

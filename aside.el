@@ -173,7 +173,11 @@ NUMBERED keys the choices by digit instead of by letter."
                               'face 'aside-summary)))
          ;; Room for the whole menu, even in a small popup frame.
          (max-mini-window-height (+ (length choices) 4)))
-    (cadr (nth (cl-position (read-char-choice prompt keys) keys) choices))))
+    (prog1 (let ((message-log-max nil))  ; Keep menus out of *Messages*.
+             (cadr (nth (cl-position (read-char-choice prompt keys) keys) choices)))
+      ;; Emacs echoes the menu and the key pressed, and the echo would
+      ;; stay until something else is said.
+      (message nil))))
 
 (defun aside--plain-completion-p ()
   "Return non-nil if completion shows its list in the *Completions* buffer."
