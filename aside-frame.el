@@ -38,7 +38,7 @@ manager rule to float popups."
 
 (defcustom aside-frame-parameters
   '((width . 78) (height . 22)
-    (minibuffer . t) (unsplittable . t)
+    (minibuffer . t)
     (tool-bar-lines . 0) (menu-bar-lines . 0) (tab-bar-lines . 0)
     (vertical-scroll-bars . nil) (horizontal-scroll-bars . nil)
     (internal-border-width . 14) (left-fringe . 0) (right-fringe . 0))
