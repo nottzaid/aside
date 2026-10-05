@@ -1191,6 +1191,8 @@ key shown beside each option.
 \\{aside-mode-map}"
   (setq-local word-wrap t
               truncate-lines nil
+              ;; Even with `global-display-line-numbers-mode', a popup has none.
+              display-line-numbers-type nil
               mode-line-format '(:eval (aside--mode-line))
               header-line-format nil)
   (add-hook 'after-change-functions #'aside--update-placeholder nil t)

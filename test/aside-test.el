@@ -523,6 +523,16 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
         (should (equal (get-text-property at 'face line)
                        (get-text-property (+ at 2) 'face line)))))))
 
+(ert-deftest aside-shows-no-line-numbers ()
+  "Popups have no line numbers, even when they are on everywhere else."
+  (let ((was global-display-line-numbers-mode))
+    (global-display-line-numbers-mode 1)
+    (unwind-protect
+        (aside-test--with-agent (opencode "opencode-session")
+          (with-current-buffer (aside-test--open dir)
+            (should-not display-line-numbers)))
+      (global-display-line-numbers-mode (if was 1 -1)))))
+
 (ert-deftest aside-placeholder-only-in-an-empty-prompt ()
   "The hint shows in an empty prompt and goes away when you type."
   (aside-test--with-agent (opencode "opencode-session")
