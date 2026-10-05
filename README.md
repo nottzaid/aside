@@ -22,6 +22,19 @@ add other ACP agents.
 | Codex | `npm install -g @agentclientprotocol/codex-acp` | `codex login` |
 | Cline | `npm install -g cline` | `cline auth` |
 
+If `npm install -g` needs root, add `--prefix ~/.local`.
+
+Emacs must find each program on `exec-path`. An Emacs that starts as a
+service, or from a desktop menu, often has a short `PATH`. If aside cannot
+find a program, add its directory:
+
+```elisp
+(dolist (dir '("~/.local/bin" "~/.opencode/bin"))
+  (let ((dir (expand-file-name dir)))
+    (add-to-list 'exec-path dir)
+    (setenv "PATH" (concat dir path-separator (getenv "PATH")))))
+```
+
 ## Install
 
 ```elisp

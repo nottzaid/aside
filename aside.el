@@ -162,7 +162,7 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
                        (propertize
                         (if (aside--installed-p agent)
                             (concat "  " (string-join (plist-get (aside--spec agent) :command) " "))
-                          (concat "  not installed: " (plist-get (aside--spec agent) :install)))
+                          (concat "  not found: " (plist-get (aside--spec agent) :install)))
                         'face 'completions-annotations))))
          (default (and aside--last-agent (aside--agent-name aside--last-agent)))
          (choice (completing-read
@@ -193,8 +193,12 @@ ON-ERROR is called with a description if that fails."
      ((aside-acp-live-p conn)
       (push (cons on-ready on-error) (alist-get agent aside--waiting)))
      ((not (aside--installed-p agent))
-      (funcall on-error (format "%s isn't installed (%s)" (aside--agent-name agent)
-                                (plist-get (aside--spec agent) :install))))
+      (funcall on-error
+               (format-message
+                (concat "Can't find `%s' on `exec-path'. Install %s (%s), "
+                        "or add its directory to `exec-path'")
+                (car (plist-get (aside--spec agent) :command)) (aside--agent-name agent)
+                (plist-get (aside--spec agent) :install))))
      (t
       (setf (alist-get agent aside--waiting) (list (cons on-ready on-error)))
       (condition-case err

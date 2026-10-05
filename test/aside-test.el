@@ -376,6 +376,24 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (mapc #'kill-buffer (aside--popups))
       (delete-directory dir t))))
 
+(ert-deftest aside-explains-an-agent-it-cant-find ()
+  "A popup whose agent program isn't on `exec-path' says so, and how to fix it."
+  (let* ((dir (aside-test--project))
+         (aside-agents '((codex :name "Codex" :command ("aside-no-such-program")
+                                :install "npm install -g @agentclientprotocol/codex-acp")))
+         (aside-default-agent 'codex)
+         (aside--connections nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (with-current-buffer (let ((default-directory (file-name-as-directory dir)))
+                               (aside)
+                               (current-buffer))
+          (aside-test--wait (lambda () (eq aside--state 'failed)) "the failure")
+          (should (equal aside--problem
+                         (format-message "Can't find `aside-no-such-program' on `exec-path'. Install Codex (npm install -g @agentclientprotocol/codex-acp), or add its directory to `exec-path'"))))
+      (mapc #'kill-buffer (aside--popups))
+      (delete-directory dir t))))
+
 (ert-deftest aside-acp-error-text-reads-details ()
   "Error details are shown however the agent nests them."
   (should (equal (aside-acp-error-text '(:code -32603 :message "Internal error"
