@@ -110,6 +110,21 @@ manager rule to float popups."
     (set-window-buffer window buffer)
     (set-window-dedicated-p window dedicated)))
 
+(defun aside-frame-replace (old new title)
+  "Show NEW where OLD is shown, titled TITLE, and drop NEW's own frame.
+NEW then has OLD's frame, or OLD's window when popups aren't frames."
+  (let ((frame (aside-frame-of old))
+        (own (aside-frame-of new)))
+    (if frame
+        (progn
+          (when (and own (not (eq own frame)))
+            (delete-frame own t))
+          (set-frame-parameter frame 'aside-buffer new)
+          (set-frame-parameter frame 'name title)
+          (aside-frame-swap (frame-root-window frame) new))
+      (when-let* ((window (get-buffer-window old t)))
+        (aside-frame-swap window new)))))
+
 (defun aside-frame-reveal (buffer title)
   "Bring BUFFER's popup, titled TITLE, into view if it is hidden."
   (unless (aside-frame-visible-p buffer)

@@ -593,6 +593,43 @@ says you interrupted shows as stopped, not as something you wrote."
       (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
       (delete-directory dir t))))
 
+(defun aside-test--resume-into (here other)
+  "From the popup HERE, resume the session that the popup OTHER has open.
+OTHER stands for a second popup of the same project, as 0.4 left behind."
+  (with-current-buffer here (aside-resume))
+  (let ((id (with-current-buffer (aside-test--list)
+              (cadr (nth (aside-list--index) aside-list--choices)))))
+    (with-current-buffer other (setq aside--session id))
+    (puthash id other aside--sessions)
+    (aside-test--choose)))
+
+(ert-deftest aside-resume-moves-the-popup-that-has-the-session ()
+  "Choosing a session that another popup has open puts that popup in this
+one's place and closes this one, so one popup is left."
+  (let* ((dir (aside-test--project))
+         (aside-agents (list (aside-test--fake 'claude "claude-load" dir)))
+         (aside-default-agent 'claude)
+         (aside-notify nil)
+         (aside--connections nil)
+         (aside--last-agent nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (let* ((here (let ((default-directory (file-name-as-directory dir)))
+                       (aside)
+                       (current-buffer)))
+               (window (get-buffer-window here t))
+               (other (aside--create 'claude dir)))
+          (aside-test--wait (lambda () (with-current-buffer here
+                                         (memq aside--state '(failed ready))))
+                            "the popup")
+          (aside-test--resume-into here other)
+          (should-not (buffer-live-p here))
+          (should (equal (aside--popups) (list other)))
+          (should (eq (window-buffer window) other)))
+      (dolist (buffer (aside--popups)) (kill-buffer buffer))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory dir t))))
+
 (ert-deftest aside-resume-leaves-no-popup-when-it-cant ()
   "A popup opened only to list sessions goes away when there are none to
 list: the agent can't list them, or none were made in this project."

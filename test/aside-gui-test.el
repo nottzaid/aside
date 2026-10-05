@@ -104,6 +104,39 @@ and gives the frame back to the popup as it was."
       (should (eq (window-buffer (frame-root-window frame)) popup))
       (should (equal (with-current-buffer popup (aside--prompt-text)) "half a prompt")))))
 
+(ert-deftest aside-gui-resume-moves-the-popup-that-has-the-session ()
+  "When another popup has the chosen session open, it moves into this
+popup's frame, its own frame goes, and no second frame stays up."
+  (skip-unless (display-graphic-p))
+  (let* ((dir (aside-test--project))
+         (aside-agents (list (aside-test--fake 'claude "claude-load" dir)))
+         (aside-default-agent 'claude)
+         (aside-notify nil)
+         (aside--connections nil)
+         (aside--last-agent nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (let* ((here (let ((default-directory (file-name-as-directory dir)))
+                       (aside)
+                       (current-buffer)))
+               (frame (aside-frame-of here))
+               (other (aside--create 'claude dir)))
+          (aside-test--wait (lambda () (with-current-buffer here
+                                         (memq aside--state '(failed ready))))
+                            "the popup")
+          (aside--show other)
+          (let ((other-frame (aside-frame-of other)))
+            (aside--show here)
+            (aside-test--resume-into here other)
+            (should-not (frame-live-p other-frame)))
+          (should-not (buffer-live-p here))
+          (should (eq (aside-frame-of other) frame))
+          (should (eq (window-buffer (frame-root-window frame)) other))
+          (should (eq (selected-frame) frame)))
+      (dolist (buffer (aside--popups)) (kill-buffer buffer))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory dir t))))
+
 (defun aside-gui-run ()
   "Run these tests, print the results and exit with their status."
   (let ((stats (ert-run-tests-batch "\\`aside-gui-")))

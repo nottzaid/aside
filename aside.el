@@ -1651,8 +1651,7 @@ CANCEL is called if none is, or if they can't be listed."
               ((eq existing (current-buffer))
                (message "This is that session"))
               ((buffer-live-p existing)
-               (when cancel (funcall cancel))
-               (aside--show existing))
+               (aside--replace-with existing))
               (t (aside--start-over agent id conn)))))
          cancel))
     ((error quit)
@@ -1696,6 +1695,17 @@ CANCEL is called if none is, or if they can't be listed."
       (aside--answer block nil))
     (aside--status "Stopping"))
    (t (aside-dismiss))))
+
+(defun aside--replace-with (other)
+  "Put the popup OTHER in this one's place, and close this one.
+This popup's session stays with its agent, to be resumed later."
+  (let ((this (current-buffer)))
+    (aside--check-idle)
+    (aside-frame-replace this other (with-current-buffer other (aside--frame-title)))
+    (with-current-buffer other
+      (setq aside--origin-frame (buffer-local-value 'aside--origin-frame this)))
+    (kill-buffer this)
+    (aside--show other)))
 
 (defun aside--check-idle ()
   "Signal if this popup's agent is working."
