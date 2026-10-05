@@ -92,6 +92,10 @@ Its background is the text's, whatever colour the theme gives fringes."
   "The line saying what the agent did."
   :group 'aside)
 
+(defface aside-choice-row '((t :inherit hl-line))
+  "The choice under the cursor."
+  :group 'aside)
+
 (defface aside-file-link '((t :underline t))
   "A file name that opens the file when clicked."
   :group 'aside)
@@ -117,7 +121,7 @@ Its background is the text's, whatever colour the theme gives fringes."
   '((done "✓" "+") (failed "✗" "x") (pending "○" "-") (thought "✻" "*")
     (request "?" "?") (cancelled "⊘" "/") (todo "☐" "[ ]") (doing "◐" "[~]")
     (finished "☑" "[x]") (more "…" "...") (bar "▎" "|") (dot "·" "-")
-    (selected "●" "*") (unselected "○" " "))
+    (selected "●" "*") (unselected "○" "-"))
   "Glyphs by name, each with an ASCII fallback.")
 
 (defconst aside-turn--spinner '("◐" "◓" "◑" "◒")
@@ -129,6 +133,16 @@ Its background is the text's, whatever colour the theme gives fringes."
     (if (char-displayable-p (string-to-char (car entry)))
         (car entry)
       (cadr entry))))
+
+(defun aside-turn-title-bar ()
+  "Return the bar to set before a heading.
+On graphical displays it is a thin stretch of colour, elsewhere a
+box-drawing character."
+  (if (display-graphic-p)
+      (concat (propertize " " 'display '(space :width 0.25)
+                          'face '(:inherit aside-prompt-bar :inverse-video t))
+              (propertize " " 'display '(space :width 1.75)))
+    (propertize (concat (aside-turn-glyph 'bar) " ") 'face 'aside-prompt-bar)))
 
 (defun aside-turn-spinner ()
   "Return the spinner frame for the current moment."
@@ -287,18 +301,17 @@ Return the block whose text changed, or nil if nothing visible did."
                       'display '(space :align-to right))
           "\n"))
 
-(defun aside-turn-block-string (block running root width &optional keys)
+(defun aside-turn-block-string (block running root width)
   "Return the text for BLOCK.
 RUNNING is non-nil while the turn is in progress; ROOT shortens paths;
-WIDTH limits one-line summaries.  KEYS lists the keys that answer a
-permission request, as from `aside-turn-request-keys'."
+WIDTH limits one-line summaries."
   (pcase (aside-turn-block-kind block)
     ('message (let ((text (aside-turn--text block)))
                 (if (string-empty-p text) "" (concat (string-trim-left text "\n+") "\n"))))
     ('thought (aside-turn--thought-string block width))
     ('tool (aside-turn--tool-string block running root))
     ('plan (aside-turn--plan-string block))
-    ('request (aside-turn--request-string block root keys))
+    ('request (aside-turn--request-string block root))
     (_ "")))
 
 (defun aside-turn-separator (previous block)
@@ -373,21 +386,6 @@ RUNNING animates it while the turn is in progress; ROOT shortens paths."
 (defvar aside-turn-option-map (make-sparse-keymap)
   "Keymap on each option of a permission request; aside.el binds it.")
 
-(defconst aside-turn--kind-keys
-  '(("allow_once" . "o") ("allow_always" . "a") ("reject_once" . "r") ("reject_always" . "R"))
-  "Keys for the standard kinds of permission option.")
-
-(defun aside-turn-request-keys (request)
-  "Return an alist of (KEY . OPTION) for the permission REQUEST."
-  (let ((used nil) (n 0) (keys nil))
-    (dolist (option (plist-get request :options))
-      (let ((key (cdr (assoc (plist-get option :kind) aside-turn--kind-keys))))
-        (when (or (null key) (member key used))
-          (setq key (number-to-string (cl-incf n))))
-        (push key used)
-        (push (cons key option) keys)))
-    (nreverse keys)))
-
 (defun aside-turn--diff-lines (old new)
   "Return the changed lines between the strings OLD and NEW, as a list."
   (let ((a (make-temp-file "aside-old")) (b (make-temp-file "aside-new")))
@@ -431,32 +429,34 @@ Paths under ROOT are shortened."
       (list (propertize (concat "$ " (aside-turn--relativize command root))
                         'face 'aside-code))))))
 
-(defun aside-turn--request-string (block root keys)
-  "Return the permission request BLOCK, offering KEYS, with paths under ROOT."
-  (let* ((request (aside-turn-block-request block))
-         (tool (plist-get request :toolCall))
+(defun aside-turn-request-title (request root)
+  "Return the one-line title of the permission REQUEST, paths under ROOT shortened."
+  (let* ((tool (plist-get request :toolCall))
          (title (aside-turn--relativize
                  (or (plist-get tool :title) (plist-get tool :kind) "Permission")
-                 root))
-         (title (car (split-string (string-trim title) "\n"))))
+                 root)))
+    (car (split-string (string-trim title) "\n"))))
+
+(defun aside-turn--request-string (block root)
+  "Return the permission request BLOCK, with paths under ROOT shortened.
+Each option is a line of its own; RET on it, or a click, chooses it."
+  (let ((request (aside-turn-block-request block)))
     (concat
      "  " (propertize (aside-turn-glyph 'request) 'face 'aside-request) " "
-     (propertize title 'face 'aside-request) "\n"
+     (propertize (aside-turn-request-title request root) 'face 'aside-request) "\n"
      (mapconcat (lambda (line)
                   (propertize (concat "    " line "\n") 'wrap-prefix "      "))
-                (aside-turn--request-preview tool root) "")
-     (propertize
-      (concat "    "
-              (mapconcat (lambda (pair)
-                           (propertize (concat (propertize (car pair) 'face 'aside-key) " "
-                                               (plist-get (cdr pair) :name))
-                                       'aside-key (car pair)
-                                       'keymap aside-turn-option-map
-                                       'mouse-face 'highlight
-                                       'help-echo "Click or press RET to choose this"))
-                         keys "   "))
-      'wrap-prefix "    ")
-     "\n")))
+                (aside-turn--request-preview (plist-get request :toolCall) root) "")
+     (mapconcat (lambda (option)
+                  ;; The whole line, so RET works wherever the cursor is on it.
+                  (propertize (concat "    " (propertize (aside-turn-glyph 'unselected)
+                                                         'face 'aside-summary)
+                                      " " (plist-get option :name) "\n")
+                              'aside-option option
+                              'keymap aside-turn-option-map
+                              'mouse-face 'highlight
+                              'help-echo "Click or press RET to choose this"))
+                (plist-get request :options) ""))))
 
 ;;;; The finished turn
 

@@ -103,6 +103,13 @@ manager rule to float popups."
                               (side . bottom)
                               (window-height . ,aside-window-height))))))
 
+(defun aside-frame-swap (window buffer)
+  "Show BUFFER in WINDOW in place of its buffer, though WINDOW is dedicated."
+  (let ((dedicated (window-dedicated-p window)))
+    (set-window-dedicated-p window nil)
+    (set-window-buffer window buffer)
+    (set-window-dedicated-p window dedicated)))
+
 (defun aside-frame-reveal (buffer title)
   "Bring BUFFER's popup, titled TITLE, into view if it is hidden."
   (unless (aside-frame-visible-p buffer)

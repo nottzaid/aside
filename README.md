@@ -54,8 +54,8 @@ Or clone the repository, add it to `load-path` and `(require 'aside)`.
 ## Use
 
 1. Open a file in a project.
-2. Type `M-x aside`. The first time, push the key of an agent. Later
-   popups use the same agent. To use another one, type `C-c C-a` in the
+2. Type `M-x aside`. The first time, choose an agent. Later popups use
+   the same agent. To use another one, type `C-c C-a` in the
    popup, or `C-u M-x aside`.
 3. Write a prompt.
 4. Type `C-c C-c` to send it. With Evil, type `:w`.
@@ -64,8 +64,8 @@ While the agent works, the popup shows:
 
 - the last line of its reasoning,
 - each tool that it uses, and the status of the tool,
-- each permission request. Push the key next to an option, or click the
-  option.
+- each permission request. The cursor goes to the first option. Move to
+  an option and push RET, or click the option.
 
 When the agent stops, the popup shows the answer and a summary of the
 work. Click a file name in the summary, or push RET on it, to open the file. To ask a follow-up question, write below the answer and send it.
@@ -73,14 +73,18 @@ aside sends only the new text. The agent keeps the history of the session.
 
 ### Choices
 
-When aside asks you to choose, it shows all the choices:
+When aside asks you to choose, the popup shows a list of all the choices.
+A dot marks the current choice.
 
-- A short list is a menu. Push the key next to a choice. A dot marks
-  the current choice.
-- A long list, such as the models of an agent, opens at once and becomes
-  shorter as you type. Matching ignores case and finds words anywhere.
-  Use the arrow keys to select a choice and RET to choose it. RET on an
-  empty prompt keeps the current choice.
+| Evil | Other | Action |
+| --- | --- | --- |
+| `j`, `k` | `C-n`, `C-p` | Move to the next or the previous choice. |
+| `gg`, `G` | `M-<`, `M->` | Move to the first or the last choice. |
+| `/` | `C-s` | Search the list. |
+| RET | RET | Choose. You can also click a choice. |
+| `q`, ESC | `q`, `C-g` | Close the list without a choice. |
+
+Then the popup shows again, as it was.
 
 ### Keys in the popup
 
@@ -95,9 +99,9 @@ When aside asks you to choose, it shows all the choices:
 | `C-c C-e` | | Select the reasoning effort, if the model has one. |
 | `C-c C-o` | | Set an option of the session, for example the mode or the effort. |
 | `C-c C-n` | | Start a new session. With `C-u`, select the agent. |
-| `C-c C-r` | | Resume an earlier session. |
+| `C-c C-r` | | Resume an earlier session in this popup. |
 | `C-c C-x` | | Remove the attached regions. |
-| `C-c ?` | | Show all the keys. Push one to do its action. |
+| `C-c ?` | | Show a list of all the keys. Choose one to do its action. |
 
 An empty prompt shows the keys for the model, the effort and the options.
 The mode line shows the agent, the model, the effort and the mode. Click
@@ -112,7 +116,7 @@ Big Pickle has none, but its DeepSeek and GLM models have one.
 | --- | --- |
 | `aside` | Show the popup of the current project. If the popup is in front, hide it. With `C-u`, start a new session and select the agent. |
 | `aside-toggle` | Hide the popup. In other buffers, show the last popup. |
-| `aside-resume` | Resume an earlier session of the current project. |
+| `aside-resume` | Resume an earlier session of the current project, in its popup. |
 | `aside-stop-agents` | Stop all agent processes. |
 
 ### Attach a region

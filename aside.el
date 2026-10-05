@@ -34,6 +34,7 @@
 (require 'aside-acp)
 (require 'aside-turn)
 (require 'aside-frame)
+(require 'aside-list)
 
 (defconst aside-version "0.4.1"
   "The version of aside.")
@@ -98,170 +99,16 @@ and values, such as ((claude (\"model\" . \"haiku\"))).  In a popup,
 
 ;;;; Choosing
 
-;; Every question aside asks shows its answers.  Up to ten choices make
-;; a menu, answered with one key; longer lists use completion, with the
-;; whole list shown at once.
+;; Every question aside asks shows all its answers, in a list that
+;; takes the popup's window until you choose; see aside-list.el.
 
-(defface aside-choice-title '((t :inherit bold))
-  "The heading of a menu of choices."
-  :group 'aside)
-
-(defface aside-choice-current '((t :inherit (bold font-lock-keyword-face)))
-  "The choice in use."
-  :group 'aside)
-
-(defconst aside--menu-limit 10
-  "The most choices a menu offers; longer lists use completion.")
-
-(defun aside--choice-keys (labels &optional numbered)
-  "Return a distinct key for each of LABELS.
-Keys are letters from each label where possible.  With NUMBERED, they
-are digits, for choices in an order such as recency."
-  (let ((used nil))
-    (mapcar (lambda (label)
-              (let ((key (or (and (not numbered)
-                                  (cl-find-if (lambda (char)
-                                                (and (<= ?a char ?z) (not (memq char used))))
-                                              (downcase label)))
-                             (cl-find-if (lambda (char) (not (memq char used)))
-                                         "1234567890"))))
-                (push key used)
-                key))
-            labels)))
-
-(defun aside--menu-row (key choice width radio current)
-  "Return the menu line offering CHOICE on KEY.
-WIDTH is the width of the widest label.  RADIO adds a column marking
-the choice whose value is CURRENT."
-  (pcase-let* ((`(,label ,value ,note) choice)
-               (chosen (and radio (equal value current))))
-    (concat "  " (propertize (string key) 'face 'aside-key) "  "
-            (cond ((not radio) "")
-                  (chosen (propertize (concat (aside-turn-glyph 'selected) " ")
-                                      'face 'aside-choice-current))
-                  (t (propertize (concat (aside-turn-glyph 'unselected) " ")
-                                 'face 'aside-summary)))
-            (propertize label 'face (if chosen 'aside-choice-current 'default))
-            (when note
-              (concat (propertize " " 'display
-                                  `(space :align-to ,(+ width (if radio 10 8))))
-                      (propertize (truncate-string-to-width
-                                   note (max 20 (- (frame-width) width 14)) nil nil
-                                   (aside-turn-glyph 'more))
-                                  'face 'aside-summary)))
-            "\n")))
-
-(defun aside--menu (title choices &optional current note numbered)
-  "Ask for one of CHOICES with a single key, and return its value.
-Each choice is a list (LABEL VALUE NOTE), where NOTE may be nil.  The
-menu shows TITLE, then every choice with its key and note, then NOTE.
-When CURRENT is one of the values, the menu marks it as in use.
-NUMBERED keys the choices by digit instead of by letter."
-  (let* ((keys (aside--choice-keys (mapcar #'car choices) numbered))
-         (radio (and (cl-find current choices :key #'cadr :test #'equal) t))
-         (width (apply #'max (mapcar (lambda (choice) (string-width (car choice))) choices)))
-         (prompt
-          (concat (aside--title-bar) (propertize title 'face 'aside-choice-title) "\n"
-                  (apply #'concat (cl-mapcar (lambda (key choice)
-                                               (aside--menu-row key choice width radio current))
-                                             keys choices))
-                  (and note (let ((note (copy-sequence note)))
-                              ;; Appended, so keys in the note keep their keycaps.
-                              (add-face-text-property 0 (length note) 'aside-summary t note)
-                              (concat "  " note "\n")))
-                  (propertize (format "  press a key %s C-g cancels " (aside-turn-glyph 'dot))
-                              'face 'aside-summary)))
-         ;; Room for the whole menu, even in a small popup frame.
-         (max-mini-window-height (+ (length choices) 4)))
-    (prog1 (let ((message-log-max nil))  ; Keep menus out of *Messages*.
-             (cadr (nth (cl-position (read-char-choice prompt keys) keys) choices)))
-      ;; Emacs echoes the menu and the key pressed, and the echo would
-      ;; stay until something else is said.
-      (message nil))))
-
-(defun aside--plain-completion-p ()
-  "Return non-nil if completion shows its list in the *Completions* buffer."
-  (and (eq completing-read-function #'completing-read-default)
-       (not (bound-and-true-p icomplete-mode))
-       (not (bound-and-true-p vertico-mode))))
-
-(defun aside--complete (title choices &optional current noun default)
-  "Ask for one of CHOICES with completion, and return its value.
-CHOICES are as for `aside--menu'.  The whole list shows at once and
-narrows as you type; matching ignores case and finds words anywhere.
-CURRENT marks the value in use, NOUN names the choices in the count
-above the list, and DEFAULT is the value RET picks on an empty prompt;
-it defaults to CURRENT."
-  (let* ((labels (mapcar #'car choices))
-         (width (apply #'max (mapcar #'string-width labels)))
-         (default (or default current))
-         (default-label (car (cl-find default choices :key #'cadr :test #'equal)))
-         (affix
-          (lambda (labels)
-            (mapcar (lambda (label)
-                      (pcase-let ((`(,_ ,value ,note) (assoc-string label choices t)))
-                        (list label
-                              (if (and current (equal value current))
-                                  (propertize (concat (aside-turn-glyph 'selected) " ")
-                                              'face 'aside-choice-current)
-                                "  ")
-                              (if note
-                                  (concat (propertize " " 'display
-                                                      `(space :align-to ,(+ width 5)))
-                                          (propertize note 'face 'aside-summary))
-                                ""))))
-                    labels)))
-         (table (lambda (string pred action)
-                  (if (eq action 'metadata)
-                      `(metadata (category . aside-choice)
-                                 (display-sort-function . identity)
-                                 (cycle-sort-function . identity)
-                                 (affixation-function . ,affix)
-                                 (eager-display . t)
-                                 (eager-update . t))
-                    (complete-with-action action labels string pred))))
-         (completion-ignore-case t)
-         (completions-format 'one-column)
-         (completion-show-help nil)
-         (completions-header-format
-          (propertize (format "%%s %s\n" (or noun "choices")) 'face 'aside-summary))
-         (minibuffer-visible-completions t)
-         (completion-list-mode-hook (cons #'aside--tidy-completions
-                                          completion-list-mode-hook))
-         (choice
-          (minibuffer-with-setup-hook
-              (lambda ()
-                ;; Show the list now.  Emacs 31's own eager display waits
-                ;; for an idle moment, which the focus events of a newly
-                ;; raised popup can postpone until you type.  Emacs 31
-                ;; then keeps the list up to date itself.
-                (when (aside--plain-completion-p)
-                  (minibuffer-completion-help)
-                  (when (< emacs-major-version 31)
-                    (add-hook 'after-change-functions
-                              (lambda (&rest _) (minibuffer-completion-help)) nil t))))
-            (completing-read (format-prompt title default-label) table nil t
-                             nil nil default-label))))
-    (cadr (assoc-string choice choices t))))
-
-(defun aside--tidy-completions ()
-  "Keep the list of choices plain: no line numbers, mode line or cursor."
-  (setq-local display-line-numbers-type nil
-              display-line-numbers nil
-              mode-line-format nil
-              cursor-in-non-selected-windows nil))
-
-(add-to-list 'completion-category-defaults
-             '(aside-choice (styles basic substring partial-completion)))
-
-(defun aside--pick (title choices &optional current noun numbered default)
-  "Ask for one of CHOICES: in a menu when they are few, else by completion.
-TITLE, CURRENT, NOUN, NUMBERED and DEFAULT are as for `aside--menu'
-and `aside--complete'."
-  (cond ((null choices) (user-error "There is nothing to choose from"))
-        ((<= (length choices) aside--menu-limit)
-         (aside--menu title choices (or current default) nil numbered))
-        (t (aside--complete title choices current noun default))))
+(defun aside--choose (title choices &rest args)
+  "Show CHOICES, headed TITLE, in place of this popup until you choose.
+ARGS are as for `aside-list-choose'.  The popup comes into view first
+if it isn't."
+  (unless (eq (window-buffer (selected-window)) (current-buffer))
+    (aside--show (current-buffer)))
+  (apply #'aside-list-choose title choices args))
 
 ;;;; State
 
@@ -322,31 +169,37 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
   "Return non-nil if AGENT's program can be found."
   (executable-find (car (plist-get (aside--spec agent) :command))))
 
-(defun aside--read-agent (&optional title current)
-  "Ask which agent to use, in a menu headed TITLE; return it.
-CURRENT, or else the agent used last, is marked.  Only agents whose
-programs can be found are offered.  When just one can, it is used
-without asking."
-  (let* ((agents (mapcar #'car aside-agents))
-         (installed (cl-remove-if-not #'aside--installed-p agents))
-         (missing (cl-remove-if #'aside--installed-p agents)))
-    (pcase installed
-      ('nil (user-error "No agent found on `exec-path'.  Install one: %s"
-                        (mapconcat (lambda (agent)
-                                     (format "%s (%s)" (aside--agent-name agent)
-                                             (plist-get (aside--spec agent) :install)))
-                                   agents "; ")))
-      (`(,only) only)
-      (_ (aside--menu (or title "Agent")
-                      (mapcar (lambda (agent) (list (aside--agent-name agent) agent))
-                              installed)
-                      (or current aside--last-agent)
-                      (and missing (format "Not installed: %s"
-                                           (mapconcat #'aside--agent-name missing ", "))))))))
+(defun aside--installed-agents ()
+  "Return the agents whose programs can be found; signal if none can."
+  (or (cl-remove-if-not #'aside--installed-p (mapcar #'car aside-agents))
+      (user-error "No agent found on `exec-path'.  Install one: %s"
+                  (mapconcat (lambda (agent)
+                               (format "%s (%s)" (aside--agent-name agent)
+                                       (plist-get (aside--spec agent) :install)))
+                             (mapcar #'car aside-agents) "; "))))
 
-(defun aside--default-agent ()
-  "Return the agent for a new popup, asking the first time."
-  (or aside-default-agent aside--last-agent (aside--read-agent)))
+(defun aside--read-agent (title current then &optional cancel)
+  "Ask which agent to use, in a list headed TITLE, and call THEN with it.
+CURRENT, or else the agent used last, is marked.  Only agents whose
+programs can be found are offered; when just one can, THEN gets it
+without asking.  CANCEL is called if you choose none."
+  (let* ((installed (aside--installed-agents))
+         (missing (cl-remove-if (lambda (agent) (memq agent installed))
+                                (mapcar #'car aside-agents))))
+    (if (null (cdr installed))
+        (funcall then (car installed))
+      (aside--choose title
+                     (mapcar (lambda (agent) (list (aside--agent-name agent) agent))
+                             installed)
+                     :current (or current aside--last-agent)
+                     :note (and missing (format "Not installed: %s"
+                                                (mapconcat #'aside--agent-name missing ", ")))
+                     :then then
+                     :cancel cancel))))
+
+(defun aside--known-agent ()
+  "Return the agent new popups use without asking, or nil to ask."
+  (or aside-default-agent aside--last-agent))
 
 (defun aside--client-info ()
   "Return what aside tells agents about itself."
@@ -461,7 +314,6 @@ ACP announces many capabilities as empty objects, which count."
             aside--root root
             default-directory (file-name-as-directory root))
       (aside--compose))
-    (setq aside--last-agent agent)
     buffer))
 
 (defun aside--show (buffer)
@@ -530,15 +382,7 @@ box-drawing character on a text terminal."
   (if (aside-frame-has-fringe-p)
       (concat (propertize " " 'display '(left-fringe aside-bar aside-prompt-bar-fringe))
               (propertize " " 'display '(space :width 1)))
-    (aside--title-bar)))
-
-(defun aside--title-bar ()
-  "Return the bar beside a single line, such as a menu's heading."
-  (if (display-graphic-p)
-      (concat (propertize " " 'display '(space :width 0.25)
-                          'face '(:inherit aside-prompt-bar :inverse-video t))
-              (propertize " " 'display '(space :width 1.75)))
-    (propertize (concat (aside-turn-glyph 'bar) " ") 'face 'aside-prompt-bar)))
+    (aside-turn-title-bar)))
 
 (defun aside--compose ()
   "Set up an empty prompt at the end of the buffer."
@@ -645,7 +489,8 @@ box-drawing character on a text terminal."
 Create one, or resume SESSION-ID quietly when given."
   (let ((buffer (current-buffer)))
     (setq aside--state (if session-id 'reviving 'starting)
-          aside--problem nil)
+          aside--problem nil
+          aside--last-agent aside--agent)
     (aside--update-placeholder)
     (aside--tick-soon)
     (aside--connect
@@ -941,10 +786,7 @@ On-off options are named only when they are on."
   "Replace BLOCK's text with how it should look now."
   (let* ((blocks (aside-turn-blocks aside--turn))
          (previous (cadr (memq block (reverse blocks))))
-         (body (aside-turn-block-string
-                block t aside--root (aside--width)
-                (and (eq (aside-turn-block-kind block) 'request)
-                     (aside-turn-request-keys (aside-turn-block-request block)))))
+         (body (aside-turn-block-string block t aside--root (aside--width)))
          (text (if (string-empty-p body) "" (concat (aside-turn-separator previous block) body)))
          (next (aside--next-marker block))
          (start (aside-turn-block-marker block)))
@@ -1097,18 +939,54 @@ Return the files of modified buffers that were left alone."
 
 ;;;; Permission
 
-(defvar-keymap aside-request-mode-map
-  :doc "Keys that answer a permission request."
-  "o" #'aside-answer "a" #'aside-answer "r" #'aside-answer "R" #'aside-answer
-  "1" #'aside-answer "2" #'aside-answer "3" #'aside-answer "4" #'aside-answer
-  "5" #'aside-answer "6" #'aside-answer "7" #'aside-answer "8" #'aside-answer
-  "9" #'aside-answer)
+;; A request shows each option on a line of its own.  The cursor goes
+;; to the first; move as anywhere else and choose with RET or a click.
+
+(defvar-local aside--option-overlay nil "Highlights the option under the cursor.")
+(defvar-local aside--evil-state-before nil
+  "Evil's state before a request took the cursor, to go back to after.")
+
+(defvar evil-state)
+(declare-function evil-change-state "evil-core")
 
 (define-minor-mode aside-request-mode
-  "Answer the agent's permission request with a single key."
+  "Highlight the permission option under the cursor while a request waits."
   :lighter nil
-  (when (fboundp 'evil-normalize-keymaps)
-    (evil-normalize-keymaps)))
+  (if aside-request-mode
+      (add-hook 'post-command-hook #'aside--highlight-option nil t)
+    (remove-hook 'post-command-hook #'aside--highlight-option t)
+    (when (overlayp aside--option-overlay)
+      (delete-overlay aside--option-overlay))
+    (when aside--evil-state-before
+      (when (bound-and-true-p evil-local-mode)
+        (evil-change-state aside--evil-state-before))
+      (setq aside--evil-state-before nil))))
+
+(defun aside--highlight-option ()
+  "Highlight the permission option on the line at point, if any."
+  (if (not (get-text-property (point) 'aside-option))
+      (when (overlayp aside--option-overlay)
+        (delete-overlay aside--option-overlay))
+    (unless (overlayp aside--option-overlay)
+      (setq aside--option-overlay (make-overlay 1 1))
+      (overlay-put aside--option-overlay 'face 'aside-choice-row))
+    (move-overlay aside--option-overlay (line-beginning-position)
+                  (min (1+ (line-end-position)) (point-max)))))
+
+(defun aside--point-to-request ()
+  "Put the cursor on the first option of the oldest unanswered request.
+With Evil in insert state, switch to normal state, so moving works."
+  (when-let* ((block (car (aside-turn-requests aside--turn)))
+              (start (aside-turn-block-marker block))
+              (pos (text-property-not-all start (point-max) 'aside-option nil)))
+    (when (and (bound-and-true-p evil-local-mode) (eq evil-state 'insert))
+      (setq aside--evil-state-before 'insert)
+      (evil-change-state 'normal))
+    (goto-char pos)
+    (skip-chars-forward " ")
+    (dolist (window (get-buffer-window-list nil nil t))
+      (set-window-point window (point)))
+    (aside--highlight-option)))
 
 (defun aside--on-permission (params reply)
   "Show the permission request in PARAMS in its popup; REPLY answers it."
@@ -1118,8 +996,10 @@ Return the files of modified buffers that were left alone."
         (funcall reply (list :outcome (list :outcome "cancelled")))
       (with-current-buffer buffer
         (let ((block (aside-turn-add-request aside--turn (append params (list :reply reply)))))
-          (aside--draw block))
-        (aside-request-mode 1)
+          (aside--draw block)
+          (aside-request-mode 1)
+          (when (eq block (car (aside-turn-requests aside--turn)))
+            (aside--point-to-request)))
         (force-mode-line-update)
         (cond
          ((aside-frame-selected-p buffer))
@@ -1128,26 +1008,34 @@ Return the files of modified buffers that were left alone."
          (t (message "%s is waiting for your permission in %s"
                      (aside--agent-name aside--agent) (buffer-name buffer))))))))
 
-(defun aside-answer (key)
-  "Answer the oldest permission request with the option on KEY."
-  (interactive (list (key-description (this-command-keys))) aside-mode)
-  (let* ((block (or (car (aside-turn-requests aside--turn))
-                    (user-error "Nothing is waiting for an answer")))
-         (option (cdr (assoc key (aside-turn-request-keys (aside-turn-block-request block))))))
-    (unless option
-      (user-error "No option on %s" key))
-    (aside--answer block (plist-get option :optionId))))
-
-(defun aside--answer (block option-id)
-  "Answer the request in BLOCK with OPTION-ID, or cancel it when nil."
+(defun aside--answer (block option)
+  "Answer the request in BLOCK with OPTION, a plist from the agent.
+Nil cancels it."
   (funcall (plist-get (aside-turn-block-request block) :reply)
-           (list :outcome (if option-id
-                              (list :outcome "selected" :optionId option-id)
+           (list :outcome (if option
+                              (list :outcome "selected" :optionId (plist-get option :optionId))
                             (list :outcome "cancelled"))))
   (aside--erase block)
-  (unless (aside-turn-requests aside--turn)
-    (aside-request-mode -1))
+  (if (aside-turn-requests aside--turn)
+      (aside--point-to-request)
+    (aside-request-mode -1)
+    (goto-char (point-max))
+    (dolist (window (get-buffer-window-list nil nil t))
+      (set-window-point window (point-max))))
   (force-mode-line-update))
+
+(defun aside-answer-at-point (&optional event)
+  "Answer the permission request with the option at point, or clicked in EVENT."
+  (interactive (list last-nonmenu-event) aside-mode)
+  (let* ((pos (if (mouse-event-p event) (posn-point (event-start event)) (point)))
+         (option (or (get-text-property pos 'aside-option)
+                     (user-error "No option here")))
+         (block (cl-find-if (lambda (block)
+                              (memq option (plist-get (aside-turn-block-request block) :options)))
+                            (aside-turn-requests aside--turn))))
+    (unless block
+      (user-error "That request was already answered"))
+    (aside--answer block option)))
 
 (defun aside-visit-file (&optional event)
   "Open the file named at point, or clicked in EVENT.
@@ -1161,13 +1049,6 @@ small."
         (progn (select-frame-set-input-focus frame)
                (find-file file))
       (find-file-other-window file))))
-
-(defun aside-answer-at-point (&optional event)
-  "Answer the permission request with the option at point, or clicked in EVENT."
-  (interactive (list last-nonmenu-event) aside-mode)
-  (let ((pos (if (mouse-event-p event) (posn-point (event-start event)) (point))))
-    (aside-answer (or (get-text-property pos 'aside-key)
-                      (user-error "No option here")))))
 
 ;;;; Files
 
@@ -1263,7 +1144,8 @@ and the end of the turn says so."
   "Load SESSION-ID into this popup and show its last exchange."
   (let ((buffer (current-buffer)))
     (setq aside--state 'loading
-          aside--session session-id)
+          aside--session session-id
+          aside--last-agent aside--agent)
     (puthash session-id buffer aside--sessions)
     (aside--tick-soon)
     (aside-acp-request
@@ -1301,9 +1183,10 @@ and the end of the turn says so."
               (t (format "%d d ago" (/ seconds 86400)))))
     ""))
 
-(defun aside--read-session (conn root)
-  "Ask which of ROOT's sessions on CONN to resume; return its id.
-The most recent comes first, and RET on an empty prompt picks it."
+(defun aside--read-session (conn root then &optional cancel)
+  "Ask which of ROOT's sessions on CONN to resume, and call THEN with its id.
+The most recent comes first; this popup's own is marked.  CANCEL is
+called if you choose none."
   (let* ((sessions (plist-get (aside-acp-request-sync conn "session/list" (list :cwd root))
                               :sessions))
          (sessions (cl-remove-if-not (lambda (s) (equal (plist-get s :cwd) root)) sessions))
@@ -1321,7 +1204,8 @@ The most recent comes first, and RET on an empty prompt picks it."
     (unless choices
       (user-error "No earlier %s sessions in %s" (aside--agent-name (aside--agent-of conn))
                   (abbreviate-file-name root)))
-    (aside--pick "Resume" choices nil "sessions" t (cadr (car choices)))))
+    (aside--choose "Resume" choices :current aside--session :start (cadr (car choices))
+                   :noun "sessions" :then then :cancel cancel)))
 
 ;;;; The mode line
 
@@ -1370,7 +1254,13 @@ From 80% the share stands out, as the agent will soon have to forget."
   (propertize (truncate-string-to-width text 28 nil nil (aside-turn-glyph 'more))
               'mouse-face 'mode-line-highlight
               'help-echo help
-              'local-map (make-mode-line-mouse-map 'mouse-1 command)))
+              'local-map (make-mode-line-mouse-map
+                          'mouse-1 (lambda (event)
+                                     (interactive "e")
+                                     ;; Act on the popup clicked, which
+                                     ;; need not be the selected window.
+                                     (select-window (posn-window (event-start event)))
+                                     (call-interactively command)))))
 
 (defun aside--mode-line ()
   "Return the popup's mode line.
@@ -1461,7 +1351,6 @@ Each run of text keeps its properties."
 (declare-function evil-ex-define-cmd "evil-ex")
 (declare-function evil-define-key* "evil-core")
 (declare-function evil-set-initial-state "evil-core")
-(declare-function evil-make-overriding-map "evil-core")
 (declare-function notifications-notify "notifications")
 (declare-function evil-normalize-keymaps "evil-core")
 
@@ -1471,8 +1360,8 @@ Each run of text keeps its properties."
 Send with \\[aside-send] (or :w with Evil).  While the agent works,
 \\[aside-cancel] stops it; otherwise it puts the popup away, as does
 :q.  :wq sends and puts the popup away; you get a notification when
-the agent is done.  When the agent asks permission, answer with the
-key shown beside each option.
+the agent is done.  When the agent asks permission, the cursor goes to
+its options: move to one and press RET, or click it.
 
 \\{aside-mode-map}"
   ;; The fringe holds only the prompt bar: no wrap arrows, and the
@@ -1497,8 +1386,7 @@ key shown beside each option.
 
 (with-eval-after-load 'evil
   (evil-set-initial-state 'aside-mode 'insert)
-  (evil-define-key* 'normal aside-mode-map "q" #'aside-dismiss)
-  (evil-make-overriding-map aside-request-mode-map))
+  (evil-define-key* 'normal aside-mode-map "q" #'aside-dismiss))
 
 (defun aside--on-kill ()
   "Stop this popup's work when its buffer is killed."
@@ -1533,44 +1421,79 @@ it should use."
   (interactive "P")
   (let* ((context (aside--region-context))
          (root (aside--project-root))
-         (buffer (and (not choose-agent) (aside--project-popup root)))
-         (remembered nil))
-    (if (and buffer (not context) (aside-frame-selected-p buffer))
+         (buffer (aside--project-popup root))
+         (known (aside--known-agent))
+         (new (null buffer)))
+    (if (and buffer (not context) (not choose-agent) (aside-frame-selected-p buffer))
         (aside-dismiss)
-      (unless buffer
-        (setq remembered (and (not choose-agent) (not aside-default-agent) aside--last-agent))
-        (setq buffer (aside--create (if choose-agent (aside--read-agent) (aside--default-agent))
-                                    root))
-        (with-current-buffer buffer (aside--open-session)))
+      (when buffer
+        (with-current-buffer buffer
+          (when choose-agent (aside--check-idle))))
+      (when new
+        (setq buffer (aside--create (or known (car (aside--installed-agents))) root)))
       (when context
         (with-current-buffer buffer (aside--add-context context)))
       (unless (frame-parameter nil 'aside-buffer)
         (with-current-buffer buffer (setq aside--origin-frame (selected-frame))))
       (aside--show buffer)
-      (when remembered
-        (message "%s, as last time; %s switches agent" (aside--agent-name remembered)
-                 (aside--key-text 'aside-switch-agent))))))
+      (cond
+       ((or choose-agent (not known))
+        (aside--read-agent "Agent" (and (not new) aside--agent)
+                           #'aside--start-over
+                           ;; A popup opened only to ask goes away again.
+                           (and new (lambda () (kill-buffer buffer)))))
+       (new
+        (aside--open-session)
+        (unless aside-default-agent
+          (message "%s, as last time; %s switches agent" (aside--agent-name known)
+                   (aside--key-text 'aside-switch-agent))))))))
 
 ;;;###autoload
 (defun aside-resume (&optional choose-agent)
-  "Resume one of the current project's earlier sessions.
-With a prefix argument CHOOSE-AGENT, ask which agent's sessions to list."
+  "Resume one of the current project's earlier sessions, in its popup.
+The popup's current session can be resumed later in turn.  With a
+prefix argument CHOOSE-AGENT, ask which agent's sessions to list."
   (interactive "P")
-  (let* ((root (if (derived-mode-p 'aside-mode) aside--root (aside--project-root)))
-         (agent (cond (choose-agent (aside--read-agent "Resume a session of"))
-                      ((derived-mode-p 'aside-mode) aside--agent)
-                      (t (aside--default-agent))))
-         (conn (aside--connect-now agent)))
-    (unless (aside--capability conn :sessionCapabilities :list)
-      (user-error "%s can't list its sessions" (aside--agent-name agent)))
-    (let* ((session-id (aside--read-session conn root))
-           (existing (gethash session-id aside--sessions))
-           (buffer (if (buffer-live-p existing) existing (aside--create agent root))))
-      (unless (buffer-live-p existing)
-        (with-current-buffer buffer
-          (setq aside--conn conn)
-          (aside--load session-id)))
-      (aside--show buffer))))
+  (let* ((in-popup (derived-mode-p 'aside-mode))
+         (root (if in-popup aside--root (aside--project-root)))
+         (buffer (if in-popup (current-buffer) (aside--project-popup root)))
+         (known (aside--known-agent))
+         (new (null buffer)))
+    (if buffer
+        (with-current-buffer buffer (aside--check-idle))
+      (setq buffer (aside--create (or known (car (aside--installed-agents))) root)))
+    (unless (frame-parameter nil 'aside-buffer)
+      (with-current-buffer buffer (setq aside--origin-frame (selected-frame))))
+    (aside--show buffer)
+    (let ((cancel (and new (lambda () (kill-buffer buffer)))))
+      (if (or choose-agent (not known))
+          (aside--read-agent "Resume a session of" aside--agent
+                             (lambda (agent) (aside--resume-from agent cancel))
+                             cancel)
+        (aside--resume-from aside--agent cancel)))))
+
+(defun aside--resume-from (agent cancel)
+  "List AGENT's sessions in this popup's project, and load the one chosen.
+CANCEL is called if none is, or if they can't be listed."
+  (condition-case err
+      (let ((conn (aside--connect-now agent)))
+        (unless (aside--capability conn :sessionCapabilities :list)
+          (user-error "%s can't list its sessions" (aside--agent-name agent)))
+        (aside--read-session
+         conn aside--root
+         (lambda (id)
+           (let ((existing (gethash id aside--sessions)))
+             (cond
+              ((eq existing (current-buffer))
+               (message "This is that session"))
+              ((buffer-live-p existing)
+               (when cancel (funcall cancel))
+               (aside--show existing))
+              (t (aside--start-over agent id conn)))))
+         cancel))
+    ((error quit)
+     (when cancel (funcall cancel))
+     (signal (car err) (cdr err)))))
 
 ;;;###autoload
 (defun aside-toggle ()
@@ -1610,35 +1533,43 @@ With a prefix argument CHOOSE-AGENT, ask which agent's sessions to list."
     (aside--status "Stopping"))
    (t (aside-dismiss))))
 
+(defun aside--check-idle ()
+  "Signal if this popup's agent is working."
+  (when (aside--busy-p)
+    (user-error "%s is still working; %s stops it" (aside--agent-name aside--agent)
+                (aside--key-text 'aside-cancel))))
+
 (defun aside-new-session (&optional choose-agent)
   "Start over in this popup with a new session.
 With a prefix argument CHOOSE-AGENT, ask which agent to use.  The old
 session can still be resumed."
   (interactive "P" aside-mode)
-  (aside--start-over (if choose-agent
-                         (aside--read-agent "Agent" aside--agent)
-                       aside--agent)))
+  (aside--check-idle)
+  (if choose-agent
+      (aside--read-agent "Agent" aside--agent #'aside--start-over)
+    (aside--start-over aside--agent)))
 
 (defun aside-switch-agent ()
   "Start a new session in this popup with another agent.
 The old session can still be resumed."
   (interactive nil aside-mode)
-  (unless (cdr (cl-remove-if-not #'aside--installed-p (mapcar #'car aside-agents)))
+  (aside--check-idle)
+  (unless (cdr (aside--installed-agents))
     (user-error "%s is the only agent installed" (aside--agent-name aside--agent)))
-  (let ((agent (aside--read-agent "Agent" aside--agent)))
-    (if (eq agent aside--agent)
-        (message "%s it is" (aside--agent-name agent))
-      (aside--start-over agent))))
+  (aside--read-agent "Agent" aside--agent
+                     (lambda (agent)
+                       (if (eq agent aside--agent)
+                           (message "%s it is" (aside--agent-name agent))
+                         (aside--start-over agent)))))
 
-(defun aside--start-over (agent)
-  "Start a new session with AGENT in this popup."
-  (when (aside--busy-p)
-    (user-error "%s is still working" (aside--agent-name aside--agent)))
+(defun aside--start-over (agent &optional session-id conn)
+  "Start over in this popup with AGENT, in a new session.
+With SESSION-ID, load that session through CONN instead."
+  (aside--check-idle)
   (let ((inhibit-read-only t))
     (when aside--session (remhash aside--session aside--sessions))
     (unless (eq agent aside--agent)
       (setq aside--agent agent
-            aside--last-agent agent
             aside--conn nil)
       (rename-buffer (generate-new-buffer-name
                       (format "*aside: %s (%s)*" (file-name-nondirectory aside--root)
@@ -1647,7 +1578,11 @@ The old session can still be resumed."
           aside--context-warned nil aside--state nil aside--problem nil)
     (erase-buffer)
     (aside--compose)
-    (aside--open-session)))
+    (if session-id
+        (progn (setq aside--conn conn)
+               (aside--load session-id))
+      (aside--open-session))
+    (force-mode-line-update)))
 
 (defun aside--remember (id value)
   "Use VALUE for option ID in this agent's new sessions too."
@@ -1655,23 +1590,22 @@ The old session can still be resumed."
 
 (defun aside--choose-value (option)
   "Ask for a new value of OPTION and set it; switch it if it is on-off."
-  (let* ((id (plist-get option :id))
-         (name (plist-get option :name))
-         (value
-          (if (equal (plist-get option :type) "boolean")
-              (if (eq (plist-get option :currentValue) t) :false t)
-            ;; Model names share prefixes such as "OpenCode Go/", so
-            ;; letters from them make poor keys; number models instead.
-            (let ((models (equal (plist-get option :category) "model")))
-              (aside--pick name
-                           (mapcar (lambda (o)
-                                     (list (aside--capitalized (plist-get o :name))
-                                           (plist-get o :value)
-                                           (aside--value-note o)))
-                                   (plist-get option :options))
-                           (plist-get option :currentValue)
-                           (if models "models" "choices")
-                           models)))))
+  (if (equal (plist-get option :type) "boolean")
+      (aside--set-chosen-value option (if (eq (plist-get option :currentValue) t) :false t))
+    (aside--choose (plist-get option :name)
+                   (mapcar (lambda (o)
+                             (list (aside--choice-label (plist-get o :name))
+                                   (plist-get o :value)
+                                   (aside--value-note o)))
+                           (plist-get option :options))
+                   :current (plist-get option :currentValue)
+                   :noun (and (equal (plist-get option :category) "model") "models")
+                   :then (lambda (value) (aside--set-chosen-value option value)))))
+
+(defun aside--set-chosen-value (option value)
+  "Set OPTION to VALUE, remember it for new sessions and say so."
+  (let ((id (plist-get option :id))
+        (name (plist-get option :name)))
     (aside--remember id value)
     (aside--set-option-value
      id value
@@ -1687,6 +1621,15 @@ The old session can still be resumed."
                                   (aside--key-text 'aside-select-effort))
                         "no effort setting"))
            (message "%s: %s" name chosen)))))))
+
+(defun aside--choice-label (name)
+  "Return NAME for a list of choices: capitalized, any provider prefix dimmed.
+OpenCode, for one, names its models \"OpenCode Zen/Big Pickle\"."
+  (let ((name (aside--capitalized name)))
+    (if (string-match "\\`\\(.*/\\)[^/]+\\'" name)
+        (concat (propertize (match-string 1 name) 'face 'aside-summary)
+                (substring name (match-end 1)))
+      name)))
 
 (defun aside--value-note (value)
   "Return the note for the option VALUE: its description, and if it is free."
@@ -1729,7 +1672,7 @@ do; choose one with C-c C-m"
     ""))
 
 (defun aside-keys ()
-  "Show what you can do in the popup, and do the one whose key you press."
+  "List what you can do in the popup, with each key, and do the one chosen."
   (interactive nil aside-mode)
   (let ((actions
          (delq nil
@@ -1742,25 +1685,24 @@ do; choose one with C-c C-m"
                      (and aside--context '("Drop the attached regions" aside-clear-context))
                      (list (if (aside--busy-p) "Stop the agent" "Hide the popup")
                            'aside-cancel)))))
-    (call-interactively
-     (aside--menu "Keys"
-                  (mapcar (lambda (action)
-                            (list (car action) (cadr action) (aside--key-text (cadr action))))
-                          actions)
-                  nil
-                  (format "Select a region before %s to send it with the next prompt."
-                          (substitute-command-keys "\\<global-map>\\[aside]"))))))
+    (aside--choose "Keys"
+                   (mapcar (lambda (action)
+                             (list (car action) (cadr action) (aside--key-text (cadr action))))
+                           actions)
+                   :note (format "Select a region before %s to send it with the next prompt."
+                                 (substitute-command-keys "\\<global-map>\\[aside]"))
+                   :then #'call-interactively)))
 
 (defun aside-set-option ()
   "Change one of the session's options, such as its mode or reasoning effort."
   (interactive nil aside-mode)
   (aside--require-session)
-  (aside--choose-value
-   (aside--menu "Option"
-                (mapcar (lambda (option)
-                          (list (aside--capitalized (plist-get option :name)) option
-                                (aside--value-name option)))
-                        aside--options))))
+  (aside--choose "Option"
+                 (mapcar (lambda (option)
+                           (list (aside--capitalized (plist-get option :name)) option
+                                 (aside--value-name option)))
+                         aside--options)
+                 :then #'aside--choose-value))
 
 ;;;###autoload
 (defun aside-stop-agents ()

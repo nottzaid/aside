@@ -52,7 +52,14 @@
       (with-current-buffer popup (aside-test--request))
       (aside-gui--wait-visible frame t)
       (with-current-buffer popup
-        (aside-answer "o")
+        ;; The cursor waits on the first option; RET chooses it.
+        (should (equal (plist-get (get-text-property (window-point (frame-root-window frame))
+                                                     'aside-option)
+                                  :name)
+                       "Allow once"))
+        (with-selected-window (frame-root-window frame)
+          (execute-kbd-macro (kbd "RET")))
+        (should-not (aside-turn-requests aside--turn))
         (aside-test--finish)))))
 
 (ert-deftest aside-gui-prompt-bar-is-unbroken ()
@@ -76,56 +83,26 @@ unbroken even past keycaps or symbols from taller fonts."
     (should (string-prefix-p (aside-turn-glyph 'bar)
                              (substring-no-properties (aside--prompt-bar))))))
 
-(defun aside-gui--type (&rest events)
-  "Type EVENTS once the next prompt is waiting."
-  (run-at-time 0.3 nil (lambda () (setq unread-command-events events))))
-
-(ert-deftest aside-gui-menu-answers-with-one-key ()
-  "A menu lists every choice and returns the one whose key is pressed.
-Once answered, it leaves nothing in the echo area or in *Messages*."
+(ert-deftest aside-gui-list-takes-the-popup-window ()
+  "A list of choices shows in the popup's own frame, answers real keys,
+and gives the frame back to the popup as it was."
   (skip-unless (display-graphic-p))
-  (let (shown)
-    (run-at-time 0.3 nil (lambda ()
-                           (setq shown (with-current-buffer (window-buffer (minibuffer-window))
-                                         (buffer-string)))
-                           (setq unread-command-events (list ?p))))
-    (should (eq (aside--menu "Mode" '(("Build" build) ("Plan" plan "Read only")) 'build)
-                'plan))
-    (should (string-search "Plan" shown))
-    (should (string-search "Read only" shown))
-    (should-not (current-message))
-    (should-not (with-current-buffer (messages-buffer) (string-search "press a key" (buffer-string))))))
-
-(ert-deftest aside-gui-completion-shows-the-list-and-ignores-case ()
-  "Long lists show at once in the popup, match any case, and default on RET."
-  (skip-unless (display-graphic-p))
-  (let ((models (mapcar (lambda (name) (list name (downcase name) nil))
-                        '("OpenCode Zen/Big Pickle" "OpenCode Go/DeepSeek V4 Flash" "Cline"
-                          "OpenCode Go/GLM-5.3" "OpenCode Go/Grok 4.7" "OpenCode Go/Hy3"
-                          "OpenCode Go/Kimi K3" "OpenCode Go/Qwen 4 Coder" "OpenCode Go/GPT-6 Luna"
-                          "OpenCode Go/GLM-5.2" "OpenCode Go/Grok 4.6")))
-        listed)
-    (aside-test--with-agent (opencode "opencode-session")
-      (aside-test--open dir)
-      (run-at-time 0.5 nil
-                   (lambda ()
-                     (let ((window (get-buffer-window "*Completions*" t)))
-                       (setq listed (and window
-                                         (list (window-frame window)
-                                               (buffer-local-value 'display-line-numbers
-                                                                   (window-buffer window))))))
-                     (setq unread-command-events (append "cline" '(return)))))
-      (should (equal (aside--complete "Model" models nil "models") "cline"))
-      (should (eq (car listed) (selected-frame)))
-      (should-not (cadr listed))
-      ;; Type, wait for the list to narrow, then pick its first entry.
-      (aside-gui--type ?d ?e ?e ?p)
-      (run-at-time 0.9 nil (lambda () (setq unread-command-events (list 'down 'return))))
-      (should (equal (aside--complete "Model" models nil "models")
-                     "opencode go/deepseek v4 flash"))
-      (aside-gui--type 'return)
-      (should (equal (aside--complete "Model" models "opencode go/hy3" "models")
-                     "opencode go/hy3")))))
+  (aside-test--with-agent (opencode "opencode-session")
+    (let* ((popup (aside-test--open dir))
+           (frame (aside-frame-of popup))
+           (frames (length (frame-list)))
+           chosen)
+      (with-current-buffer popup (insert "half a prompt"))
+      (with-current-buffer popup
+        (aside--choose "Mode" '(("Build" build) ("Plan" plan "Read only")) :current 'build
+                       :then (lambda (value) (setq chosen value))))
+      (should (= (length (frame-list)) frames))
+      (should (eq (window-buffer (frame-root-window frame)) (aside-test--list)))
+      (with-selected-window (frame-root-window frame)
+        (execute-kbd-macro (kbd "C-n RET")))
+      (should (eq chosen 'plan))
+      (should (eq (window-buffer (frame-root-window frame)) popup))
+      (should (equal (with-current-buffer popup (aside--prompt-text)) "half a prompt")))))
 
 (defun aside-gui-run ()
   "Run these tests, print the results and exit with their status."

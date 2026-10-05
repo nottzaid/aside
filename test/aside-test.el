@@ -69,8 +69,9 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
             (aside--sessions (make-hash-table :test #'equal)))
        (unwind-protect
            (progn ,@body)
-         (dolist (buffer (aside--popups))
-           (kill-buffer buffer))
+         (dolist (buffer (buffer-list))
+           (when (memq (buffer-local-value 'major-mode buffer) '(aside-mode aside-list-mode))
+             (kill-buffer buffer)))
          (pcase-dolist (`(,_ . ,conn) aside--connections)
            (aside-acp-stop conn))
          (delete-directory dir t)))))
@@ -106,6 +107,52 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
   (dolist (string strings)
     (should (string-search string (aside-test--text)))))
 
+(defun aside-test--answer (name)
+  "Answer the oldest permission request with its option called NAME.
+The cursor goes to the option's line and RET is pressed there."
+  (let* ((block (car (aside-turn-requests aside--turn)))
+         (option (cl-find name (plist-get (aside-turn-block-request block) :options)
+                          :key (lambda (o) (plist-get o :name)) :test #'equal))
+         (pos (and option (text-property-any (point-min) (point-max) 'aside-option option))))
+    (unless pos
+      (ert-fail (format "No option called %s" name)))
+    (goto-char pos)
+    (should (eq (lookup-key (get-text-property (point) 'keymap) (kbd "RET"))
+                #'aside-answer-at-point))
+    (aside-answer-at-point)))
+
+(defun aside-test--list ()
+  "Return the list of choices on screen; fail if there is none."
+  (or (cl-find-if (lambda (buffer)
+                    (and (eq (buffer-local-value 'major-mode buffer) 'aside-list-mode)
+                         (get-buffer-window buffer t)))
+                  (buffer-list))
+      (ert-fail "No list of choices is shown")))
+
+(defun aside-test--list-text ()
+  "Return the heading and the lines of the list on screen."
+  (with-current-buffer (aside-test--list)
+    (concat (substring-no-properties header-line-format) "\n"
+            (buffer-substring-no-properties (point-min) (point-max))
+            (mapconcat (lambda (overlay)
+                         (substring-no-properties (or (overlay-get overlay 'after-string) "")))
+                       (overlays-in (point-min) (point-max)) ""))))
+
+(defun aside-test--choose (&optional label)
+  "Choose LABEL, or else the choice under the cursor, in the list on screen.
+Return what the list showed."
+  (let ((text (aside-test--list-text)))
+    (with-current-buffer (aside-test--list)
+      (when label
+        (goto-char (point-min))
+        (unless (re-search-forward (format "^ *\\(?:[●○*-] \\)?\\(?:[^\n/]*/\\)?%s\\(?: \\|$\\)"
+                                           (regexp-quote label))
+                                   nil t)
+          (ert-fail (format "No choice called %s in:\n%s" label text)))
+        (beginning-of-line))
+      (aside-list-choose-at-point))
+    text))
+
 (defun aside-test--cancel-after-first-words ()
   "Stop the turn once the agent has started answering."
   (aside-test--wait (lambda () (aside-turn-blocks aside--turn)) "the agent to start")
@@ -133,13 +180,11 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
 
       (aside-test--send (nth 1 aside-test--prompts))
       (aside-test--request)
-      (aside-test--should-show "? notes.txt" "+hello from aside" "o Allow once" "r Reject")
-      ;; Options can be chosen at point too, as a click or RET would.
-      (goto-char (point-min))
-      (search-forward "Allow once")
-      (goto-char (match-beginning 0))
-      (should (eq (lookup-key (get-text-property (point) 'keymap) (kbd "RET"))
-                  #'aside-answer-at-point))
+      (aside-test--should-show "? notes.txt" "+hello from aside"
+                               "○ Allow once\n    ○ Always allow\n    ○ Reject")
+      ;; The cursor waits on the first option, highlighted.
+      (should (equal (plist-get (get-text-property (point) 'aside-option) :name) "Allow once"))
+      (should (overlay-buffer aside--option-overlay))
       (aside-answer-at-point)
       (aside-test--finish)
       (should (equal (with-temp-buffer
@@ -152,7 +197,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (aside-test--send (nth 2 aside-test--prompts))
       (aside-test--request)
       (aside-test--should-show "$ echo aside-$((40+2))")
-      (aside-answer "o")
+      (aside-test--answer "Allow once")
       (aside-test--finish)
       (aside-test--should-show "aside-42" "ran 1 command")
 
@@ -169,13 +214,10 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (aside-test--should-show "── Claude Code" "pong")
 
       (aside-test--send (nth 1 aside-test--prompts))
-      (let ((request (aside-test--request)))
-        (should (equal (mapcar #'car (aside-turn-request-keys
-                                      (aside-turn-block-request request)))
-                       '("o" "a" "r"))))
+      (aside-test--request)
       (aside-test--should-show "? Write notes.txt" "+hello from aside"
-                               "Yes, allow all edits during this session")
-      (aside-answer "o")
+                               "○ Yes\n    ○ Yes, allow all edits during this session\n    ○ No")
+      (aside-test--answer "Yes")
       (aside-test--finish)
       (aside-test--should-show "done" "edited notes.txt")
 
@@ -236,11 +278,12 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
            (aside--connections nil)
            (aside--sessions (make-hash-table :test #'equal)))
       (unwind-protect
-          (cl-letf (((symbol-function 'read-char-choice)
-                     (lambda (_prompt keys &rest _) (car keys))))
+          (progn
             (let ((default-directory (file-name-as-directory dir))
                   (aside-default-agent agent))
               (aside-resume))
+            ;; The newest session is under the cursor.
+            (should (string-search "Resume · 1 session" (aside-test--choose)))
             (aside-test--wait (lambda () (eq aside--state 'ready)) "the session to load")
             (aside-test--should-show prompt answer)
             (should (equal (aside--prompt-text) "")))
@@ -327,65 +370,87 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
 
 ;;;; Choosing
 
-(ert-deftest aside-choice-keys-come-from-the-names ()
-  "Menu keys are letters from each name, distinct, or digits when numbered."
-  (should (equal (aside--choice-keys '("OpenCode" "Claude Code" "Codex" "Cline"))
-                 '(?o ?c ?d ?l)))
-  (should (equal (aside--choice-keys '("Manual" "Accept edits" "Plan" "Auto" "Bypass permissions"))
-                 '(?m ?a ?p ?u ?b)))
-  (should (equal (aside--choice-keys '("x" "y" "z") t) '(?1 ?2 ?3))))
+(ert-deftest aside-list-takes-the-window-and-gives-it-back ()
+  "A list shows in the popup's window, starts on the current choice, and
+puts the popup back as it was whether you choose or cancel."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (insert "half a prompt")
+      (let ((popup (current-buffer))
+            (window (get-buffer-window (current-buffer)))
+            chosen)
+        (aside--choose "Mode" '(("Build" build) ("Plan" plan "Read only"))
+                       :current 'build :then (lambda (value) (setq chosen value)))
+        (let ((list (aside-test--list)))
+          (should (eq (window-buffer window) list))
+          (with-current-buffer list
+            (should (looking-at-p "Build"))
+            (should (string-search "● Build" (buffer-string)))
+            (should (string-search "○ Plan" (buffer-string)))
+            (forward-line 1)
+            (aside-list-choose-at-point))
+          (should-not (buffer-live-p list)))
+        (should (eq chosen 'plan))
+        (should (eq (window-buffer window) popup))
+        (should (equal (aside--prompt-text) "half a prompt"))
+        (setq chosen nil)
+        (aside--choose "Mode" '(("Build" build) ("Plan" plan))
+                       :then (lambda (value) (setq chosen value))
+                       :cancel (lambda () (setq chosen 'cancelled)))
+        (with-current-buffer (aside-test--list) (aside-list-cancel))
+        (should (eq chosen 'cancelled))
+        (should (eq (window-buffer window) popup))))))
 
 (ert-deftest aside-offers-only-installed-agents ()
-  "The agent menu lists agents that can run; one is used without asking."
+  "The agent list offers agents that can run; one is used without asking."
   (let ((aside-agents '((here :name "Here" :command ("sh"))
                         (there :name "There" :command ("true"))
                         (gone :name "Gone" :command ("aside-no-such-program")
                               :install "npm install -g gone")))
         (aside--last-agent nil)
-        offered note)
-    (cl-letf (((symbol-function 'aside--menu)
-               (lambda (_title choices &optional _current menu-note &rest _)
-                 (setq offered (mapcar #'car choices) note menu-note)
-                 (cadr (car choices)))))
-      (should (eq (aside--read-agent) 'here))
+        offered note chosen)
+    (cl-letf (((symbol-function 'aside--choose)
+               (lambda (_title choices &rest args)
+                 (setq offered (mapcar #'car choices) note (plist-get args :note))
+                 (funcall (plist-get args :then) (cadr (car choices))))))
+      (aside--read-agent "Agent" nil (lambda (agent) (setq chosen agent)))
+      (should (eq chosen 'here))
       (should (equal offered '("Here" "There")))
       (should (equal note "Not installed: Gone")))
     (setq aside-agents '((here :name "Here" :command ("sh"))
-                         (gone :name "Gone" :command ("aside-no-such-program"))))
-    (should (eq (aside--read-agent) 'here))
+                         (gone :name "Gone" :command ("aside-no-such-program")))
+          chosen nil)
+    (aside--read-agent "Agent" nil (lambda (agent) (setq chosen agent)))
+    (should (eq chosen 'here))
     (setq aside-agents '((gone :name "Gone" :command ("aside-no-such-program")
                                :install "npm install -g gone")))
-    (should-error (aside--read-agent) :type 'user-error)))
+    (should-error (aside--read-agent "Agent" nil #'ignore) :type 'user-error)))
 
-(ert-deftest aside-option-menu-sets-the-chosen-value ()
-  "C-c C-o lists the session's options; choosing Mode then Plan sets it."
+(defun aside-test--watch-options ()
+  "Return a function that returns the option changes sent so far, newest first."
+  (let ((sent nil))
+    (add-hook 'aside-acp-trace-functions
+              (lambda (_ direction line)
+                (when (and (eq direction 'out) (string-search "set_config_option" line))
+                  (push line sent))))
+    (lambda () sent)))
+
+(ert-deftest aside-option-list-sets-the-chosen-value ()
+  "C-c C-o lists the session's options; choosing Session Mode then Plan sets it."
   (aside-test--with-agent (opencode "opencode-session")
     (with-current-buffer (aside-test--open dir)
-      ;; OpenCode offers Model and Session Mode, whose values it names
-      ;; in lower case; the menus capitalize them.
-      (let ((keys (list ?s ?p)) sent prompts)
-        (add-hook 'aside-acp-trace-functions
-                  (lambda (_ direction line)
-                    (when (and (eq direction 'out) (string-search "set_config_option" line))
-                      (push line sent))))
+      (let ((sent (aside-test--watch-options)))
         (unwind-protect
-            (cl-letf (((symbol-function 'read-char-choice)
-                       (lambda (prompt _keys &rest _)
-                         (push (substring-no-properties prompt) prompts)
-                         (pop keys))))
-              (aside-set-option))
+            (progn
+              (aside-set-option)
+              ;; OpenCode names its values in lower case; lists capitalize them.
+              (should (string-search "Session Mode" (aside-test--choose "Session Mode")))
+              (let ((shown (aside-test--choose "Plan")))
+                (should (string-search "● Build" shown))
+                (should (string-search "○ Plan" shown))))
           (setq aside-acp-trace-functions nil))
-        (should (string-search "s  Session Mode" (cadr prompts)))
-        (should (string-search "Build" (car prompts)))
-        (should (string-search "Plan" (car prompts)))
-        (should (string-search "\"configId\":\"mode\"" (car sent)))
-        (should (string-search "\"value\":\"plan\"" (car sent)))))))
-
-(defun aside-test--key-for (label prompt)
-  "Return the key PROMPT's menu shows beside LABEL."
-  (and (string-match (format "\\([[:alnum:]]\\)  \\(?:[^ ] \\)?%s\\>" (regexp-quote label))
-                     prompt)
-       (string-to-char (match-string 1 prompt))))
+        (should (string-search "\"configId\":\"mode\"" (car (funcall sent))))
+        (should (string-search "\"value\":\"plan\"" (car (funcall sent))))))))
 
 (ert-deftest aside-effort-is-a-key-away ()
   "C-c C-e chooses the reasoning effort, or says why there is none."
@@ -398,32 +463,33 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
   (aside-test--with-agent (claude "claude-session")
     (with-current-buffer (aside-test--open dir)
       (should (string-search "Xhigh effort" (aside--mode-line)))
-      (let (sent shown)
-        (add-hook 'aside-acp-trace-functions
-                  (lambda (_ direction line)
-                    (when (and (eq direction 'out) (string-search "set_config_option" line))
-                      (push line sent))))
+      (let ((sent (aside-test--watch-options)))
         (unwind-protect
-            (cl-letf (((symbol-function 'read-char-choice)
-                       (lambda (prompt _keys &rest _)
-                         (setq shown (substring-no-properties prompt))
-                         (aside-test--key-for "Low" shown))))
-              (aside-select-effort))
+            (progn
+              (aside-select-effort)
+              (should (string-search "Effort" (aside-test--choose "Low"))))
           (setq aside-acp-trace-functions nil))
-        (should (string-search "Effort" shown))
-        (should (string-search "\"configId\":\"effort\"" (car sent)))
-        (should (string-search "\"value\":\"low\"" (car sent)))))))
+        (should (string-search "\"configId\":\"effort\"" (car (funcall sent))))
+        (should (string-search "\"value\":\"low\"" (car (funcall sent))))))))
 
 (ert-deftest aside-mode-line-parts-can-be-clicked ()
   "The model, effort and mode in the mode line open their choices."
   (aside-test--with-agent (claude "claude-session")
     (with-current-buffer (aside-test--open dir)
-      (let ((line (aside--mode-line)))
-        (dolist (pair '(("Opus 5.5" . aside-select-model)
+      (let ((line (aside--mode-line))
+            (event (list 'mouse-1 (posn-at-point (point-min) (get-buffer-window)))))
+        (dolist (pair '(("Claude Code" . aside-switch-agent)
+                        ("Opus 5.5" . aside-select-model)
                         ("Xhigh effort" . aside-select-effort)
                         ("Manual" . aside-set-option)))
-          (let ((map (get-text-property (string-search (car pair) line) 'local-map line)))
-            (should (eq (lookup-key map [mode-line mouse-1]) (cdr pair)))))))))
+          (let ((map (get-text-property (string-search (car pair) line) 'local-map line))
+                ran)
+            (cl-letf (((symbol-function (cdr pair))
+                       (lambda () (interactive) (setq ran (current-buffer)))))
+              ;; Clicked from another window, it still acts on the popup.
+              (with-temp-buffer
+                (funcall (lookup-key map [mode-line mouse-1]) event)))
+            (should (eq ran (current-buffer)))))))))
 
 (ert-deftest aside-empty-prompt-shows-the-keys ()
   "The hint in an empty prompt names the keys that change the session."
@@ -452,16 +518,11 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
          (aside-default-agent 'opencode)
          (aside--connections nil)
          (aside--last-agent nil)
-         (aside--sessions (make-hash-table :test #'equal))
-         shown)
+         (aside--sessions (make-hash-table :test #'equal)))
     (unwind-protect
         (with-current-buffer (aside-test--open dir)
-          (cl-letf (((symbol-function 'read-char-choice)
-                     (lambda (prompt _keys &rest _)
-                       (setq shown (substring-no-properties prompt))
-                       (aside-test--key-for "Claude Code" shown))))
-            (aside-switch-agent))
-          (should (string-search "● OpenCode" shown))
+          (aside-switch-agent)
+          (should (string-search "● OpenCode" (aside-test--choose "Claude Code")))
           (aside-test--wait (lambda () (eq aside--state 'ready)) "Claude's session")
           (should (eq aside--agent 'claude))
           (should (string-search "Claude Code" (buffer-name)))
@@ -483,10 +544,9 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
          (aside--sessions (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (cl-letf (((symbol-function 'read-char-choice)
-                     (lambda (prompt _keys &rest _)
-                       (aside-test--key-for "OpenCode" (substring-no-properties prompt)))))
-            (let ((default-directory (file-name-as-directory one))) (aside)))
+          (let ((default-directory (file-name-as-directory one))) (aside))
+          ;; Nothing used before, so it asks, in the popup.
+          (aside-test--choose "OpenCode")
           (should (eq aside--last-agent 'opencode))
           (let ((default-directory (file-name-as-directory two))) (aside))
           (should (string-search "OpenCode, as last time; C-c C-a switches agent"
@@ -495,6 +555,58 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
       (delete-directory one t)
       (delete-directory two t))))
+
+;;;; Resuming
+
+(ert-deftest aside-resume-loads-into-the-popup-in-use ()
+  "Resuming from a popup loads the session there; no second popup opens."
+  (let* ((dir (aside-test--project))
+         (aside-agents (list (aside-test--fake 'claude "claude-load" dir)))
+         (aside-default-agent 'claude)
+         (aside-notify nil)
+         (aside--connections nil)
+         (aside--last-agent nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (let ((popup (let ((default-directory (file-name-as-directory dir)))
+                       (aside)
+                       (current-buffer))))
+          ;; The recording has no new session to open; this popup fails
+          ;; to start one, which is beside the point here.
+          (aside-test--wait (lambda () (memq aside--state '(failed ready))) "the popup")
+          (with-current-buffer popup (aside-resume))
+          (aside-test--choose)
+          (aside-test--wait (lambda () (with-current-buffer popup (eq aside--state 'ready)))
+                            "the session to load")
+          (should (equal (aside--popups) (list popup)))
+          (with-current-buffer popup
+            (aside-test--should-show (nth 3 aside-test--prompts))
+            (should (equal (aside--prompt-text) ""))))
+      (dolist (buffer (aside--popups)) (kill-buffer buffer))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory dir t))))
+
+(ert-deftest aside-resume-leaves-no-popup-when-it-cant ()
+  "A popup opened only to list sessions goes away when there are none to
+list: the agent can't list them, or none were made in this project."
+  (let* ((dir (aside-test--project))
+         (elsewhere (aside-test--project))
+         (aside--connections nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (pcase-dolist (`(,agent ,transcript ,complaint)
+                       '((cline "cline-error" "list its sessions")
+                         (claude "claude-load" "No earlier Claude Code sessions")))
+          (let ((aside-agents (list (aside-test--fake agent transcript elsewhere)))
+                (aside-default-agent agent))
+            (with-temp-buffer
+              (setq default-directory (file-name-as-directory dir))
+              (should (string-search complaint (cadr (should-error (aside-resume))))))
+            (should-not (aside--popups))))
+      (dolist (buffer (aside--popups)) (kill-buffer buffer))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory dir t)
+      (delete-directory elsewhere t))))
 
 ;;;; Hints
 
@@ -544,12 +656,9 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
   (aside-test--with-agent (opencode "opencode-session")
     (with-current-buffer (aside-test--open dir)
       (let (shown ran)
-        (cl-letf (((symbol-function 'read-char-choice)
-                   (lambda (prompt _keys &rest _)
-                     (setq shown (substring-no-properties prompt))
-                     (aside-test--key-for "Hide the popup" shown)))
-                  ((symbol-function 'aside-cancel) (lambda () (interactive) (setq ran t))))
-          (aside-keys))
+        (cl-letf (((symbol-function 'aside-cancel) (lambda () (interactive) (setq ran t))))
+          (aside-keys)
+          (setq shown (aside-test--choose "Hide the popup")))
         (dolist (text '("Model" "C-c C-m" "Effort" "C-c C-e" "New session" "C-c C-n"
                         "Resume a session" "Hide the popup" "C-c C-k"
                         "Select a region before"))
@@ -564,7 +673,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (aside-test--finish)
       (aside-test--send (nth 1 aside-test--prompts))
       (aside-test--request)
-      (aside-answer "o")
+      (aside-test--answer "Allow once")
       (setq aside--queued "next")
       (should (string-search "C-c C-k stops" (substring-no-properties (aside--mode-line-status))))
       (aside-dismiss)
@@ -580,7 +689,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (aside-test--finish)
       (aside-test--send (nth 1 aside-test--prompts))
       (aside-test--request)
-      (aside-answer "o")
+      (aside-test--answer "Allow once")
       (aside-test--finish)
       (goto-char (point-min))
       (search-forward "edited notes.txt")
@@ -619,8 +728,8 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
                  "Plans only"))
   (aside-test--with-agent (opencode "opencode-session")
     (with-current-buffer (aside-test--open dir)
-      (cl-letf (((symbol-function 'aside--pick) (lambda (&rest _) "opencode/big-pickle")))
-        (aside-select-model))
+      (aside-select-model)
+      (should (string-search "Model · 6 models" (aside-test--choose "Big Pickle")))
       (aside-test--wait (lambda () (string-prefix-p "Model:" (aside-test--last-message)))
                         "the confirmation")
       (should (equal (aside-test--last-message) "Model: Big Pickle · no effort setting")))))
@@ -829,7 +938,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
       (aside-test--send (nth 1 aside-test--prompts))
       (aside-test--request)
       (should (string-search "needs your answer" (aside--mode-line)))
-      (aside-answer "o")
+      (aside-test--answer "Allow once")
       (aside-test--finish)
       (should-not (string-search "needs your answer" (aside--mode-line)))
       ;; A % must reach the mode line escaped, in the same face as its number.
@@ -876,6 +985,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
 (defvar evil-state)
 (declare-function evil-mode "evil-core")
 (declare-function evil-normal-state "evil-states")
+(declare-function evil-insert-state "evil-states")
 (declare-function evil-ex-completed-binding "evil-ex")
 (declare-function evil-write "evil-commands")
 
@@ -898,25 +1008,62 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
               (should (eq (evil-ex-completed-binding "w") #'evil-write)))))
       (unless evil-mode-was (evil-mode -1)))))
 
-(ert-deftest aside-evil-answers-permission-with-one-key ()
-  "With Evil in normal state, o, a and r answer a permission request."
-  (skip-unless (require 'evil nil t))
-  (let ((evil-mode-was evil-mode))
-    (evil-mode 1)
-    (unwind-protect
-        (aside-test--with-agent (opencode "opencode-session")
-          (with-current-buffer (aside-test--open dir)
-            (aside-test--send (nth 0 aside-test--prompts))
-            (aside-test--finish)
-            (aside-test--send (nth 1 aside-test--prompts))
-            (aside-test--request)
-            (evil-normal-state)
-            (should (eq (key-binding "o") #'aside-answer))
-            (should (eq (key-binding "r") #'aside-answer))
-            (aside-answer "o")
-            (aside-test--finish)
-            (should-not (eq (key-binding "o") #'aside-answer))))
-      (unless evil-mode-was (evil-mode -1)))))
+(defmacro aside-test--with-evil (&rest body)
+  "Run BODY with Evil on, if Evil can be loaded; skip the test if not."
+  (declare (indent 0))
+  `(progn
+     (skip-unless (require 'evil nil t))
+     (let ((evil-mode-was evil-mode))
+       (evil-mode 1)
+       (unwind-protect (progn ,@body)
+         (unless evil-mode-was (evil-mode -1))))))
+
+(ert-deftest aside-evil-moves-to-a-permission-option ()
+  "With Evil, a request puts the cursor on its first option in normal state;
+j moves to the next, RET chooses it, and insert state comes back after."
+  (aside-test--with-evil
+    (aside-test--with-agent (opencode "opencode-session")
+      (with-current-buffer (aside-test--open dir)
+        (aside-test--send (nth 0 aside-test--prompts))
+        (aside-test--finish)
+        (evil-insert-state)
+        (aside-test--send (nth 1 aside-test--prompts))
+        (aside-test--request)
+        (should (eq evil-state 'normal))
+        (should (equal (plist-get (get-text-property (point) 'aside-option) :name)
+                       "Allow once"))
+        (execute-kbd-macro "j")
+        (should (equal (plist-get (get-text-property (point) 'aside-option) :name)
+                       "Always allow"))
+        (execute-kbd-macro (kbd "RET"))
+        (should-not (aside-turn-requests aside--turn))
+        (should (eq evil-state 'insert))
+        (aside-test--finish)))))
+
+(ert-deftest aside-evil-moves-in-lists ()
+  "With Evil, a list is in motion state: j, k, G and gg move, RET chooses, q cancels."
+  (aside-test--with-evil
+    (aside-test--with-agent (opencode "opencode-session")
+      (with-current-buffer (aside-test--open dir)
+        (let (chosen)
+          (aside--choose "Pick" '(("One" 1) ("Two" 2) ("Three" 3) ("Four" 4))
+                         :then (lambda (value) (setq chosen value)))
+          (with-current-buffer (aside-test--list)
+            (should (eq evil-state 'motion))
+            (execute-kbd-macro "G")
+            (should (looking-at-p "Four"))
+            (execute-kbd-macro "gg")
+            (should (looking-at-p "One"))
+            (execute-kbd-macro "jj")
+            (should (looking-at-p "Three"))
+            (execute-kbd-macro (kbd "RET")))
+          (should (eq chosen 3))
+          (aside--choose "Pick" '(("One" 1) ("Two" 2))
+                         :then (lambda (value) (setq chosen value))
+                         :cancel (lambda () (setq chosen 'cancelled)))
+          (with-current-buffer (aside-test--list)
+            (execute-kbd-macro "q"))
+          (should (eq chosen 'cancelled)))))))
 
 (provide 'aside-test)
 ;;; aside-test.el ends here

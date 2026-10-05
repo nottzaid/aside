@@ -72,8 +72,10 @@
                        (:optionId "always" :kind "allow_always" :name "Yes, and don't ask again")
                        (:optionId "reject" :kind "reject_once" :name "No")))))
     (aside-request-mode 1)
+    (aside--point-to-request)
     (aside-shots--save "working")
-    (aside--answer (car (aside-turn-requests aside--turn)) "allow")
+    (let ((request (car (aside-turn-requests aside--turn))))
+      (aside--answer request (car (plist-get (aside-turn-block-request request) :options))))
     (aside--update '(:sessionUpdate "tool_call" :toolCallId "3" :title "Edit report.py" :kind "edit" :status "completed"
                      :locations ((:path "/home/you/src/tally/report.py"))))
     (aside--update '(:sessionUpdate "tool_call" :toolCallId "4" :title "pytest" :kind "execute" :status "completed"))

@@ -45,11 +45,10 @@
       (when (> (float-time) deadline)
         (ert-fail "The agent took more than five minutes"))
       (when-let* ((request (car (aside-turn-requests aside--turn))))
-        (aside-answer (car (rassoc (cl-find "allow_once"
-                                            (plist-get (aside-turn-block-request request) :options)
-                                            :key (lambda (o) (plist-get o :kind))
-                                            :test #'equal)
-                                   (aside-turn-request-keys (aside-turn-block-request request))))))
+        (aside--answer request (cl-find "allow_once"
+                                        (plist-get (aside-turn-block-request request) :options)
+                                        :key (lambda (o) (plist-get o :kind))
+                                        :test #'equal)))
       (accept-process-output nil 0.05))))
 
 (defun aside-live--run (agent)
