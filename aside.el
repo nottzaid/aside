@@ -161,7 +161,7 @@ NUMBERED keys the choices by digit instead of by letter."
          (radio (and (cl-find current choices :key #'cadr :test #'equal) t))
          (width (apply #'max (mapcar (lambda (choice) (string-width (car choice))) choices)))
          (prompt
-          (concat (aside--prompt-bar) (propertize title 'face 'aside-choice-title) "\n"
+          (concat (aside--title-bar) (propertize title 'face 'aside-choice-title) "\n"
                   (apply #'concat (cl-mapcar (lambda (key choice)
                                                (aside--menu-row key choice width radio current))
                                              keys choices))
@@ -511,11 +511,24 @@ session couldn't be opened, it says why and how to retry."
             (t '(("C-c C-m" . "model") ("C-c C-e" . "effort") ("C-c C-o" . "options")
                  ("C-c ?" . "all keys"))))))))
 
+(when (fboundp 'define-fringe-bitmap)
+  ;; One row, repeated to fill each line's whole height, and exactly as
+  ;; wide as the bar, so no pixel shows the theme's fringe colour.
+  (define-fringe-bitmap 'aside-bar [#b111] nil 3 '(center t)))
+
 (defun aside--prompt-bar ()
   "Return the bar drawn beside your prompt.
-On graphical displays the bar is a thin stretch of colour.  A stretch
-fills its line to the full height, so the lines of a prompt join into
-one unbroken bar.  Text terminals get a box-drawing character."
+In a popup frame the bar is drawn in the fringe, which fills each line
+to its full height whatever is on it, so the lines of a prompt join into
+one unbroken bar.  Elsewhere it is a thin stretch of colour, or a
+box-drawing character on a text terminal."
+  (if (aside-frame-has-fringe-p)
+      (concat (propertize " " 'display '(left-fringe aside-bar aside-prompt-bar-fringe))
+              (propertize " " 'display '(space :width 1)))
+    (aside--title-bar)))
+
+(defun aside--title-bar ()
+  "Return the bar beside a single line, such as a menu's heading."
   (if (display-graphic-p)
       (concat (propertize " " 'display '(space :width 0.25)
                           'face '(:inherit aside-prompt-bar :inverse-video t))
@@ -528,9 +541,9 @@ one unbroken bar.  Text terminals get a box-drawing character."
     (setq aside--prompt-start (copy-marker end))
     (if (overlayp aside--prompt-overlay)
         (move-overlay aside--prompt-overlay end end)
-      (setq aside--prompt-overlay (make-overlay end end nil nil t))
-      (overlay-put aside--prompt-overlay 'line-prefix (aside--prompt-bar))
-      (overlay-put aside--prompt-overlay 'wrap-prefix (aside--prompt-bar)))
+      (setq aside--prompt-overlay (make-overlay end end nil nil t)))
+    (overlay-put aside--prompt-overlay 'line-prefix (aside--prompt-bar))
+    (overlay-put aside--prompt-overlay 'wrap-prefix (aside--prompt-bar))
     (aside--update-placeholder)))
 
 (defun aside--prompt-text ()
@@ -549,6 +562,7 @@ one unbroken bar.  Text terminals get a box-drawing character."
         (overlay-put aside--placeholder 'after-string (aside--placeholder-text)))
        ((and empty (overlayp aside--placeholder))
         (move-overlay aside--placeholder (point-max) (point-max))
+        (overlay-put aside--placeholder 'before-string (aside--prompt-bar))
         (overlay-put aside--placeholder 'after-string (aside--placeholder-text)))
        ((and (not empty) (overlayp aside--placeholder))
         (delete-overlay aside--placeholder)
@@ -1453,6 +1467,11 @@ the agent is done.  When the agent asks permission, answer with the
 key shown beside each option.
 
 \\{aside-mode-map}"
+  ;; The fringe holds only the prompt bar: no wrap arrows, and the
+  ;; same background as the text, whatever the theme gives fringes.
+  (setq-local fringe-indicator-alist
+              (cons '(continuation nil nil) fringe-indicator-alist))
+  (face-remap-add-relative 'fringe '(:inherit default))
   (setq-local word-wrap t
               truncate-lines nil
               ;; Even with `global-display-line-numbers-mode', a popup has none.

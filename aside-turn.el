@@ -43,6 +43,11 @@
   "The bar beside your prompt; its foreground is the bar's colour."
   :group 'aside)
 
+(defface aside-prompt-bar-fringe '((t :inherit (aside-prompt-bar default)))
+  "The prompt bar drawn in the fringe.
+Its background is the text's, whatever colour the theme gives fringes."
+  :group 'aside)
+
 (defface aside-placeholder '((t :inherit shadow :slant italic))
   "The hint shown in an empty prompt."
   :group 'aside)

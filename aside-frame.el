@@ -41,7 +41,7 @@ manager rule to float popups."
     (minibuffer . t)
     (tool-bar-lines . 0) (menu-bar-lines . 0) (tab-bar-lines . 0)
     (vertical-scroll-bars . nil) (horizontal-scroll-bars . nil)
-    (internal-border-width . 14) (left-fringe . 0) (right-fringe . 0))
+    (internal-border-width . 14) (left-fringe . 8) (right-fringe . 0))
   "Frame parameters for popup frames."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'aside)
@@ -54,6 +54,11 @@ manager rule to float popups."
 (defun aside-frame--use-frame-p ()
   "Return non-nil if popups should get frames of their own."
   (and (eq aside-display 'frame) (display-graphic-p)))
+
+(defun aside-frame-has-fringe-p ()
+  "Return non-nil if popups get frames with a left fringe to draw in."
+  (and (aside-frame--use-frame-p)
+       (> (or (alist-get 'left-fringe aside-frame-parameters) 0) 0)))
 
 (defun aside-frame-of (buffer)
   "Return the live popup frame showing BUFFER, visible or not."
@@ -80,6 +85,8 @@ manager rule to float popups."
          (window (frame-root-window frame)))
     (set-window-buffer window buffer)
     (set-window-dedicated-p window t)
+    ;; The fringe is for the prompt bar; the echo area needs none.
+    (set-window-fringes (minibuffer-window frame) 0 0)
     frame))
 
 (defun aside-frame-show (buffer title)

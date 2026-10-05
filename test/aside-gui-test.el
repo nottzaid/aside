@@ -56,16 +56,22 @@
         (aside-test--finish)))))
 
 (ert-deftest aside-gui-prompt-bar-is-unbroken ()
-  "On a graphical display the prompt bar is a stretch of colour, not a glyph.
-A stretch fills its line, so the bar runs unbroken down a long prompt."
+  "In a popup frame the prompt bar is drawn in the fringe.
+A fringe bitmap fills each line to its full height, so the bar runs
+unbroken even past keycaps or symbols from taller fonts."
   (skip-unless (display-graphic-p))
   (aside-test--with-agent (opencode "opencode-session")
     (with-current-buffer (aside-test--open dir)
-      (insert "a prompt long enough to wrap onto several lines of the popup")
+      (should (> (or (car (window-fringes)) 0) 0))
       (let ((bar (overlay-get aside--prompt-overlay 'line-prefix)))
-        (should (equal (get-text-property 0 'display bar) '(space :width 0.25)))
-        (should (memq :inverse-video (get-text-property 0 'face bar))))))
-  ;; Text terminals can't draw a quarter of a column, so they keep the glyph.
+        (should (equal (get-text-property 0 'display bar)
+                       '(left-fringe aside-bar aside-prompt-bar-fringe))))
+      ;; The hint's second line carries its own piece of the bar.
+      (should (string-search "aside-bar" (format "%S" (overlay-get aside--placeholder
+                                                                   'after-string))))))
+  ;; Without a fringe, a thin stretch of colour; on a terminal, a glyph.
+  (let ((aside-display 'window))
+    (should (equal (get-text-property 0 'display (aside--prompt-bar)) '(space :width 0.25))))
   (cl-letf (((symbol-function 'display-graphic-p) #'ignore))
     (should (string-prefix-p (aside-turn-glyph 'bar)
                              (substring-no-properties (aside--prompt-bar))))))
