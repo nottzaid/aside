@@ -1,163 +1,173 @@
-# opencode-hyprland-popup
+# aside
 
-An Emacs popup for [OpenCode](https://opencode.ai), tuned for Hyprland. Write a
-prompt with Evil's `:w`, watch thinking, tools, and text stream in place, then
-continue in the same session without leaving the editor.
+aside is an Emacs popup for coding agents. You write a prompt. The agent
+does the work. The popup shows the answer.
 
-The package owns presentation, not policy: it neither rewrites OpenCode's
-configuration nor changes its permissions or tool behaviour.
+![The agent asks for permission to edit a file](docs/working.png)
+![The answer and a summary of the work](docs/answer.png)
+
+aside works with OpenCode, Claude Code, Codex and Cline. It uses the
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP). You can
+add other ACP agents.
 
 ## Requirements
 
-- Emacs 28.1+ with graphical frames (pgtk or GTK/X11 under XWayland)
-- `curl` and OpenCode on `exec-path`
-- an authenticated OpenCode installation (tested with 1.17.18)
-- Evil for `:w`; without Evil, `C-c C-c` sends
+- Emacs 30.1 or later.
+- One or more agents:
 
-Hyprland integration is guarded by an X window system plus `hyprctl`; elsewhere
-it becomes an ordinary Emacs frame. `global-auto-revert-mode` is recommended,
-though the package also refreshes buffers touched by OpenCode after each turn.
+| Agent | Install | Sign in |
+| --- | --- | --- |
+| OpenCode | See [opencode.ai](https://opencode.ai). | `opencode auth login` |
+| Claude Code | `npm install -g @agentclientprotocol/claude-agent-acp` | `claude`, then `/login` |
+| Codex | `npm install -g @agentclientprotocol/codex-acp` | `codex login` |
+| Cline | `npm install -g cline` | `cline auth` |
 
 ## Install
 
-```sh
-git clone https://github.com/muradkant/emacs-oc.git
-```
-
-Add the repository root to `load-path`:
-
 ```elisp
-(add-to-list 'load-path "~/path/to/emacs-oc")
-(require 'opencode-hyprland-popup)
-(opencode-hyprland-popup-global-mode 1)
+(use-package aside
+  :vc (:url "https://github.com/nottzaid/emacs-oc")
+  :bind (("C-c o" . aside)
+         ("C-c h" . aside-toggle)))
 ```
 
-The global mode binds `C-c o` to open and `C-c h` to hide or restore the popup.
-If an older installation leaves `C-c o` undefined, remove its former nested
-directory from `load-path`; the modules now live at the repository root.
-
-By default the package starts `opencode serve --port 0`, owns that process, and
-stops it with Emacs. To attach to an existing server instead:
-
-```elisp
-(setq oc-hp-server-port 4100)
-```
+Or clone the repository, add it to `load-path` and `(require 'aside)`.
 
 ## Use
 
-1. Run `C-c o` or `M-x opencode-hyprland-popup-prompt` from a project buffer.
-2. Choose an existing project session or `*new session*`. With no existing
-   session, the picker skips itself. A prefix argument (`C-u`) creates a new
-   session immediately.
-3. Choose a model. Candidates come from the running server, so configured,
-   custom, and locally authenticated providers appear without hardcoding.
-4. Write the prompt and press `:w` or `C-c C-c`.
+1. Open a file in a project.
+2. Type `M-x aside`. The first time, select an agent.
+3. Write a prompt.
+4. Type `C-c C-c` to send it. With Evil, type `:w`.
 
-The buffer moves through one readable sequence:
+While the agent works, the popup shows:
 
-```text
-your prompt
-─── assistant ───
-live reasoning, tools, and text  →  final answer
-```
+- the last line of its reasoning,
+- each tool that it uses, and the status of the tool,
+- each permission request. Push the key next to an option, or click the
+  option.
 
-When OpenCode becomes idle, the live region is replaced by the joined answer.
-Failures remain visible as errors instead of being reported as blank answers.
-Type a follow-up below it and send again: only the new text is submitted, the
-buffer becomes the new prompt and answer, and OpenCode retains the full session
-history server-side.
+When the agent stops, the popup shows the answer and a summary of the
+work. To ask a follow-up question, write below the answer and send it.
+aside sends only the new text. The agent keeps the history of the session.
 
-`C-c h` hides the popup without destroying its live buffer and restores the
-same frame from elsewhere. It refuses to hide the last visible graphical Emacs
-frame, which would strand the restore binding. `q` in Evil normal state or
-`C-c C-k` in any state dismisses and buries the frame; reopening that session
-is therefore immediate. Different sessions retain independent buffers and
-popup frames, so several can remain visible and stream concurrently.
+### Keys in the popup
 
-### Project scope
+| Key | Evil | Action |
+| --- | --- | --- |
+| `C-c C-c` | `:w` | Send the prompt. |
+| | `:wq` | Send the prompt and hide the popup. |
+| `C-c C-k` | | Stop the agent. If the agent is idle, hide the popup. |
+| | `:q`, `q` | Hide the popup. The agent continues. |
+| `C-c C-m` | | Select the model. |
+| `C-c C-o` | | Set an option of the session, for example the mode. |
+| `C-c C-n` | | Start a new session. With `C-u`, select the agent. |
+| `C-c C-r` | | Resume an earlier session. |
+| `C-c C-x` | | Remove the attached regions. |
 
-Every request carries the Git worktree root in `x-opencode-directory`, allowing
-one server to serve several projects safely. If your home directory is itself a
-Git repository, initialize each project separately or set
-`oc-hp-session-directory`; otherwise Git correctly treats the home worktree as
-the scope.
+### Commands
 
-### Permissions
+| Command | Action |
+| --- | --- |
+| `aside` | Show the popup of the current project. If the popup is in front, hide it. With `C-u`, start a new session and select the agent. |
+| `aside-toggle` | Hide the popup. In other buffers, show the last popup. |
+| `aside-resume` | Resume an earlier session of the current project. |
+| `aside-stop-agents` | Stop all agent processes. |
 
-An OpenCode `ask` rule appears in the popup's own minibuffer:
+### Attach a region
 
-- `o` approves once;
-- `a` approves always and persists the rule;
-- `r` rejects the request.
+Select a region, then type `M-x aside`. aside attaches the region to the
+next prompt. The header line of the popup shows the attached regions.
 
-For example, a project-local `opencode.json` can request confirmation for edits
-and shell commands:
+### Files
 
-```json
-{ "permission": { "edit": "ask", "bash": "ask" } }
-```
+The agent reads and writes files through Emacs:
 
-### Edited files
+- A read gets the text of the buffer, with unsaved changes.
+- A write updates a buffer that has no unsaved changes.
+- aside does not change a buffer that has unsaved changes.
 
-The package gathers paths from completed mutating tool calls. Once that
-session becomes idle, it reverts every unmodified live buffer visiting a
-touched path. Buffers with unsaved edits are never overwritten and are reported
-as skipped. Shell-command path guessing is disabled by default because it
-cannot reliably identify every file a command changed. Disable the refresh
-safety net when another mechanism owns it:
+Some agents write files directly. After each turn, aside reverts the
+unmodified buffers whose files changed. The summary names the buffers that
+aside did not revert.
+
+### Hidden popups
+
+The agent continues when you hide the popup. When the agent stops, aside
+sends a desktop notification. When the agent asks for permission, aside
+shows the popup again.
+
+## Configure
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `aside-agents` | Four agents | The agents and their commands. |
+| `aside-session-options` | `nil` | The options for new sessions, for each agent. |
+| `aside-default-agent` | `nil` | The agent for new popups. `nil` means the last agent that you used. |
+| `aside-display` | `frame` | `frame`: a separate frame. `window`: a window in the current frame. |
+| `aside-frame-parameters` | 78 × 22 | The parameters of popup frames. |
+| `aside-show-thoughts` | `brief` | `brief`: the last line of reasoning. `full`: all of it. `nil`: none. |
+| `aside-reveal-on-request` | `t` | Show a hidden popup when the agent asks for permission. |
+| `aside-notify` | `t` | Send a notification when the agent of a hidden popup stops. |
+
+aside remembers the model and the options that you select. New sessions
+of the same agent use them until Emacs stops. To set them permanently, use
+`aside-session-options`:
 
 ```elisp
-(setq oc-hp-revert-mode nil)
+(setq aside-session-options '((claude ("model" . "haiku"))))
 ```
 
-## Hyprland rule
+To add an agent, give its ACP command:
 
-The frame title is `OpenCode Prompt`; title-only matching avoids XWayland class
-casing differences:
+```elisp
+(add-to-list 'aside-agents
+             '(my-agent :name "My Agent" :command ("my-agent" "--acp")))
+```
+
+### Float the popup in a tiling window manager
+
+The title of a popup frame is `aside · PROJECT`. Make a rule that floats
+windows whose title starts with `aside`.
+
+Hyprland, Lua configuration:
+
+```lua
+hl.window_rule({ match = { title = "^aside" }, float = true, center = true })
+```
+
+Hyprland, hyprlang configuration:
 
 ```conf
-windowrule = float on, size 650 380, center on, match:title ^(OpenCode Prompt)$
+windowrule = float on, center on, match:title ^aside
 ```
 
-Without this rule, the package snapshots Hyprland's clients before frame
-creation and assigns the newly appearing address to that specific frame. This
-also distinguishes several popup frames with the same title. It never floats
-whichever window happens to be active—a race that can target the original
-Emacs frame under XWayland. Disable the runtime fallback with:
+Sway and i3:
 
-```elisp
-(setq oc-hp-popup-float-on-hyprland nil)
+```conf
+for_window [title="^aside"] floating enable
 ```
 
-## Configuration
-
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `oc-hp-popup-frame-title` | `"OpenCode Prompt"` | Frame title and Hyprland match |
-| `oc-hp-popup-frame-width` / `-height` | `68` / `19` | Size in characters and lines |
-| `oc-hp-popup-float-on-hyprland` | `t` | Float the resolved frame address |
-| `oc-hp-popup-default-model` | `nil` | Preferred `provider/model` in the picker |
-| `oc-hp-server-port` | `nil` | Spawn a server; a number attaches instead |
-| `oc-hp-server-password` | `nil` | `OPENCODE_SERVER_PASSWORD` for Basic auth |
-| `oc-hp-revert-mode` | `t` | Refresh buffers touched during a turn |
-| `oc-hp-display-divider` | `"─── assistant ───"` | Prompt/response divider |
-
-## Verify
-
-Run the ERT protocol and failure-injection regressions, deterministic state,
-buffer-pool, and directory-safety suites, plus a real `opencode serve`
-transport smoke test (no model request or quota):
+## Develop
 
 ```sh
-./tests/run-batch.sh
+make compile                  # Byte-compile. Warnings are errors.
+make test                     # Replay recorded agent sessions. Uses no quota.
+make live AGENTS="opencode"   # Run the same tests with real agents. Uses quota.
+make record AGENT=opencode    # Record new sessions for the tests.
+make screenshots              # Draw docs/*.png. Needs Xvfb.
 ```
 
-The command exits nonzero if any suite fails. Interactive display, session,
-permission, revert, and two-turn scenarios remain available through
-`M-x oc-hp-test-phase5-streaming` through `M-x oc-hp-test-phase9-two-turn` after
-loading `tests/opencode-hyprland-popup-tests.el`; their prompts state the exact
-acceptance evidence.
+The tests replay sessions that real agents recorded, in `test/transcripts/`.
+The recorder removes account details and local paths. Record again when an
+agent changes its behavior.
 
-The suite is exercised on Emacs 28.2 and 30.2. OpenCode 1.17.18 emits
-`message.part.updated` and `message.part.delta`; tests use the same string IDs,
-ordered part updates, tool-state shape, and error events as that server.
+To include the Evil tests, add Evil to the load path:
+
+```sh
+make test LOAD_PATH="path/to/evil path/to/goto-chg"
+```
+
+Tested with Emacs 30.2 and 31.1, OpenCode 1.18.34, claude-agent-acp 0.85.1
+and codex-acp 2.1.1. For Cline 3.0.64, the tests replay only a sign-in
+error.
