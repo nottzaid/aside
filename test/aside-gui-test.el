@@ -55,6 +55,21 @@
         (aside-answer "o")
         (aside-test--finish)))))
 
+(ert-deftest aside-gui-prompt-bar-is-unbroken ()
+  "On a graphical display the prompt bar is a stretch of colour, not a glyph.
+A stretch fills its line, so the bar runs unbroken down a long prompt."
+  (skip-unless (display-graphic-p))
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (insert "a prompt long enough to wrap onto several lines of the popup")
+      (let ((bar (overlay-get aside--prompt-overlay 'line-prefix)))
+        (should (equal (get-text-property 0 'display bar) '(space :width 0.25)))
+        (should (memq :inverse-video (get-text-property 0 'face bar))))))
+  ;; Text terminals can't draw a quarter of a column, so they keep the glyph.
+  (cl-letf (((symbol-function 'display-graphic-p) #'ignore))
+    (should (string-prefix-p (aside-turn-glyph 'bar)
+                             (substring-no-properties (aside--prompt-bar))))))
+
 (defun aside-gui-run ()
   "Run these tests, print the results and exit with their status."
   (let ((stats (ert-run-tests-batch "\\`aside-gui-")))

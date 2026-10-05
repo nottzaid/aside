@@ -40,7 +40,7 @@
 ;;;; Faces
 
 (defface aside-prompt-bar '((t :inherit font-lock-keyword-face))
-  "The bar beside your prompt."
+  "The bar beside your prompt; its foreground is the bar's colour."
   :group 'aside)
 
 (defface aside-placeholder '((t :inherit shadow :slant italic))

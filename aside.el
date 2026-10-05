@@ -312,8 +312,15 @@ ACP announces many capabilities as empty objects, which count."
                         'face 'aside-placeholder))))
 
 (defun aside--prompt-bar ()
-  "Return the bar drawn beside your prompt."
-  (propertize (concat (aside-turn-glyph 'bar) " ") 'face 'aside-prompt-bar))
+  "Return the bar drawn beside your prompt.
+On graphical displays the bar is a thin stretch of colour.  A stretch
+fills its line to the full height, so the lines of a prompt join into
+one unbroken bar.  Text terminals get a box-drawing character."
+  (if (display-graphic-p)
+      (concat (propertize " " 'display '(space :width 0.25)
+                          'face '(:inherit aside-prompt-bar :inverse-video t))
+              (propertize " " 'display '(space :width 1.75)))
+    (propertize (concat (aside-turn-glyph 'bar) " ") 'face 'aside-prompt-bar)))
 
 (defun aside--compose ()
   "Set up an empty prompt at the end of the buffer."
