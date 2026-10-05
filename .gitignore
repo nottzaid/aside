@@ -1,13 +1,11 @@
-# byte-compiled artifacts
+# Byte-compiled and native-compiled files
 *.elc
-# autoloads
-opencode-hyprland-popup-autoloads.el
-# backup/lock
+*.eln
+
+# Generated autoloads
+*-autoloads.el
+
+# Editor backups and locks
 *~
-.\#*
-\#*
-# elisp package archives
-*.tar
-*.tar.gz
-# opencode runtime marker (records the most-recent session id for resume)
-opencode-session
+.#*
+\#*#
