@@ -153,6 +153,7 @@ for_window [title="^aside"] floating enable
 ```sh
 make compile                  # Byte-compile. Warnings are errors.
 make test                     # Replay recorded agent sessions. Uses no quota.
+make gui                      # Test popup frames. Needs Xvfb.
 make live AGENTS="opencode"   # Run the same tests with real agents. Uses quota.
 make record AGENT=opencode    # Record new sessions for the tests.
 make screenshots              # Draw docs/*.png. Needs Xvfb.

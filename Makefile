@@ -4,7 +4,7 @@ AGENTS ?= opencode claude codex cline
 LOAD_PATH ?=
 BATCH = $(EMACS) --batch -Q -L . -L test $(foreach dir,$(LOAD_PATH),-L $(dir))
 
-.PHONY: all compile test live record screenshots clean
+.PHONY: all compile test gui live record screenshots clean
 
 all: compile test
 
@@ -17,6 +17,11 @@ compile:
 # Replay recorded agent sessions through the real popup.  Fast; no quota.
 test:
 	$(BATCH) -l test/aside-test.el -f ert-run-tests-batch-and-exit
+
+# Test popup frames in a graphical Emacs on a virtual X display.
+gui:
+	xvfb-run -a -s '-screen 0 1920x1080x24' env -u WAYLAND_DISPLAY \
+	  $(EMACS) -Q -L . -L test -l test/aside-gui-test.el -f aside-gui-run
 
 # Run the same flow against the real agents.  Costs a little quota.
 live:
