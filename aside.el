@@ -281,6 +281,7 @@ Each callback is a cons of an on-ready and an on-error function.")
 (defvar-local aside--conn nil "The connection to this popup's agent.")
 (defvar-local aside--session nil "This popup's session id.")
 (defvar-local aside--root nil "The project directory this popup works in.")
+(defvar-local aside--origin-frame nil "The frame the popup was last opened from.")
 (defvar-local aside--state nil
   "Where this popup's session stands.
 One of `starting', `loading', `reviving', `ready' or `failed'.")
@@ -1084,6 +1085,19 @@ Return the files of modified buffers that were left alone."
     (aside-request-mode -1))
   (force-mode-line-update))
 
+(defun aside-visit-file (&optional event)
+  "Open the file named at point, or clicked in EVENT.
+It opens in the frame the popup was opened from, so the popup stays
+small."
+  (interactive (list last-nonmenu-event) aside-mode)
+  (let* ((pos (if (mouse-event-p event) (posn-point (event-start event)) (point)))
+         (file (or (get-text-property pos 'aside-file) (user-error "No file here")))
+         (frame aside--origin-frame))
+    (if (and (frame-live-p frame) (eq (frame-visible-p frame) t))
+        (progn (select-frame-set-input-focus frame)
+               (find-file file))
+      (find-file-other-window file))))
+
 (defun aside-answer-at-point (&optional event)
   "Answer the permission request with the option at point, or clicked in EVENT."
   (interactive (list last-nonmenu-event) aside-mode)
@@ -1363,6 +1377,8 @@ Each run of text keeps its properties."
   "C-c C-r" #'aside-resume
   "C-c C-x" #'aside-clear-context)
 
+(keymap-set aside-turn-file-map "<mouse-1>" #'aside-visit-file)
+(keymap-set aside-turn-file-map "RET" #'aside-visit-file)
 (keymap-set aside-turn-option-map "<mouse-1>" #'aside-answer-at-point)
 (keymap-set aside-turn-option-map "RET" #'aside-answer-at-point)
 
@@ -1446,6 +1462,8 @@ it should use."
         (with-current-buffer buffer (aside--open-session)))
       (when context
         (with-current-buffer buffer (aside--add-context context)))
+      (unless (frame-parameter nil 'aside-buffer)
+        (with-current-buffer buffer (setq aside--origin-frame (selected-frame))))
       (aside--show buffer))))
 
 ;;;###autoload

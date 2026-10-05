@@ -87,6 +87,13 @@
   "The line saying what the agent did."
   :group 'aside)
 
+(defface aside-file-link '((t :underline t))
+  "A file name that opens the file when clicked."
+  :group 'aside)
+
+(defvar aside-turn-file-map (make-sparse-keymap)
+  "Keymap on file names in a turn's summary; aside.el binds it.")
+
 (defface aside-code '((t :inherit font-lock-constant-face))
   "Inline code in an answer."
   :group 'aside)
@@ -461,8 +468,7 @@ Paths under ROOT are shortened."
 Return nil when there is nothing worth saying, as when it failed at once."
   (let* ((tools (cl-remove-if-not (lambda (b) (eq (aside-turn-block-kind b) 'tool))
                                   (aside-turn-blocks turn)))
-         (files (mapcar (lambda (f) (aside-turn--relative f root))
-                        (aside-turn-edited-files turn)))
+         (files (aside-turn-edited-files turn))
          (commands (cl-count "execute" tools :key #'aside-turn-block-tool-kind :test #'equal))
          (failed (cl-count "failed" tools :key #'aside-turn-block-status :test #'equal))
          (stop (aside-turn-stop-reason turn))
@@ -470,7 +476,11 @@ Return nil when there is nothing worth saying, as when it failed at once."
           (delq nil
                 (list
                  (cond ((null files) nil)
-                       ((<= (length files) 2) (concat "edited " (string-join files ", ")))
+                       ((<= (length files) 2)
+                        (concat "edited "
+                                (mapconcat (lambda (file)
+                                             (aside-turn--file-link file root))
+                                           files ", ")))
                        (t (format "edited %d files" (length files))))
                  (and (> commands 0)
                       (format "ran %d command%s" commands (if (= commands 1) "" "s")))
@@ -490,9 +500,19 @@ Return nil when there is nothing worth saying, as when it failed at once."
                       ((equal stop "cancelled") (aside-turn-glyph 'cancelled))
                       (t (propertize (aside-turn-glyph 'done) 'face 'aside-done)))))
     (unless (or (null parts) (and (aside-turn-error turn) (null work)))
-      (concat glyph " "
-              (propertize (string-join parts (concat " " (aside-turn-glyph 'dot) " "))
-                          'face 'aside-summary)))))
+      (let ((text (string-join parts (concat " " (aside-turn-glyph 'dot) " "))))
+        ;; Appended, so the faces of failures and file names show through.
+        (add-face-text-property 0 (length text) 'aside-summary t text)
+        (concat glyph " " text)))))
+
+(defun aside-turn--file-link (file root)
+  "Return FILE, shortened under ROOT, as a link that opens it."
+  (propertize (aside-turn--relative file root)
+              'face 'aside-file-link
+              'aside-file file
+              'mouse-face 'highlight
+              'help-echo "Click or press RET to open this file"
+              'keymap aside-turn-file-map))
 
 ;;;; Markdown
 
