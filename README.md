@@ -71,6 +71,24 @@ When the agent stops, the popup shows the answer and a summary of the
 work. Click a file name in the summary, or push RET on it, to open the file. To ask a follow-up question, write below the answer and send it.
 aside sends only the new text. The agent keeps the history of the session.
 
+### History
+
+The popup shows only the last prompt and answer. To see all of the
+session, type `C-c C-l`. Each turn then shows above your prompt, with:
+
+- all of the reasoning,
+- the command and the output of each tool,
+- your answers to permission requests.
+
+Long output shows 12 lines. Push RET on the line below it to see all.
+Type `C-c C-l` again to show only the last answer. Your prompt does not
+change.
+
+aside keeps each turn that it sees. For a session that you resume, it
+has only the turns that the agent sends again. When an agent compacts a
+session, it keeps only a summary of the earlier turns. Some agents do not
+send their reasoning or the output of tools again.
+
 ### Choices
 
 When aside asks you to choose, the popup shows a list of all the choices.
@@ -98,6 +116,7 @@ Then the popup shows again, as it was.
 | `C-c C-m` | | Select the model. |
 | `C-c C-e` | | Select the reasoning effort, if the model has one. |
 | `C-c C-o` | | Set an option of the session, for example the mode or the effort. |
+| `C-c C-l` | | Show or hide the full history of the session. |
 | `C-c C-n` | | Start a new session. With `C-u`, select the agent. |
 | `C-c C-r` | | Resume an earlier session in this popup. |
 | `C-c C-x` | | Remove the attached regions. |
@@ -152,6 +171,7 @@ When the agent asks for permission, aside shows the popup again.
 | `aside-display` | `frame` | `frame`: a separate frame. `window`: a window in the current frame. |
 | `aside-frame-parameters` | 78 × 22 | The parameters of popup frames. |
 | `aside-show-thoughts` | `brief` | `brief`: the last line of reasoning. `full`: all of it. `nil`: none. |
+| `aside-output-lines` | `12` | The lines of tool output that the full history shows before you open it. |
 | `aside-reveal-on-request` | `t` | Show a hidden popup when the agent asks for permission. |
 | `aside-notify` | `t` | Send a notification when the agent of a hidden popup stops. |
 

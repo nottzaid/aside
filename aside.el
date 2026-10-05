@@ -146,6 +146,10 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
 (defvar-local aside--turn nil "The current or most recent turn.")
 (defvar-local aside--queued nil "Prompt text waiting for the session to be ready.")
 (defvar-local aside--history nil "Turns replayed while loading a session, newest first.")
+(defvar-local aside--log nil "The session's finished turns, oldest first.")
+(defvar-local aside--history-shown nil "Non-nil while the full history is shown.")
+(defvar-local aside--history-end nil "Where the full history ends and the usual view begins.")
+(defvar-local aside--compact-overlay nil "Hides the last exchange while the full history has it.")
 (defvar-local aside--context nil "Regions to send with the next prompt.")
 (defvar-local aside--prompt-start nil "Where the prompt being written begins.")
 (defvar-local aside--live-start nil "Where the agent's reply begins during a turn.")
@@ -363,8 +367,8 @@ session couldn't be opened, it says why and how to retry."
      "\n" (aside--prompt-bar)
      (aside--key-hints
       (cond (failed `((,send . "retries") ("C-c ?" . "all keys")))
-            (answered '(("C-c C-n" . "new session") ("C-c C-a" . "agent")
-                        ("C-c C-m" . "model") ("C-c ?" . "all keys")))
+            (answered '(("C-c C-l" . "history") ("C-c C-n" . "new session")
+                        ("C-c C-a" . "agent") ("C-c ?" . "all keys")))
             (t '(("C-c C-a" . "agent") ("C-c C-m" . "model") ("C-c C-e" . "effort")
                  ("C-c ?" . "all keys"))))))))
 
@@ -691,8 +695,11 @@ On-off options are named only when they are on."
                " · "))
 
 (defun aside--begin-turn (text)
-  "Clear the popup down to the prompt TEXT and open the agent's reply."
-  (let ((inhibit-read-only t))
+  "Clear the popup down to the prompt TEXT and open the agent's reply.
+The full history, if shown, stays above it."
+  (let ((inhibit-read-only t)
+        (history aside--history-shown))
+    (when history (aside--hide-full-history))
     (erase-buffer)
     (when (overlayp aside--placeholder)
       (delete-overlay aside--placeholder)
@@ -701,9 +708,10 @@ On-off options are named only when they are on."
     (insert (propertize text 'line-prefix (aside--prompt-bar) 'wrap-prefix (aside--prompt-bar))
             "\n\n" (aside-turn-divider (aside--label)))
     (setq aside--live-start (point-marker)
-          aside--turn (aside-turn-create :prompt text)
+          aside--turn (aside-turn-create :prompt text :label (aside--label))
           aside--status-block nil
           buffer-read-only t)
+    (when history (aside--show-full-history))
     (aside--status (if (eq aside--state 'ready)
                        (format "Waiting for %s" (aside--agent-name aside--agent))
                      (format "Starting %s" (aside--agent-name aside--agent))))
@@ -786,7 +794,8 @@ On-off options are named only when they are on."
   "Replace BLOCK's text with how it should look now."
   (let* ((blocks (aside-turn-blocks aside--turn))
          (previous (cadr (memq block (reverse blocks))))
-         (body (aside-turn-block-string block t aside--root (aside--width)))
+         (body (aside-turn-block-string block t aside--root (aside--width)
+                                        aside--history-shown))
          (text (if (string-empty-p body) "" (concat (aside-turn-separator previous block) body)))
          (next (aside--next-marker block))
          (start (aside-turn-block-marker block)))
@@ -798,13 +807,23 @@ On-off options are named only when they are on."
     (insert text)
     (when next (set-marker next (point)))))
 
-(defun aside--erase (block)
-  "Remove BLOCK from the turn and the popup."
+(defun aside--undraw (block)
+  "Remove BLOCK's text from the popup, keeping it in the turn."
   (when-let* ((start (aside-turn-block-marker block)))
     (let ((inhibit-read-only t))
       (delete-region start (or (aside--next-marker block) (point-max))))
-    (set-marker start nil))
-  (aside-turn-remove aside--turn block))
+    (set-marker start nil)
+    (setf (aside-turn-block-marker block) nil)))
+
+(defun aside--redraw-live ()
+  "Draw the running turn again, as the full history wants it or not."
+  (let ((windows (aside--following-windows))
+        (inhibit-read-only t))
+    (aside--clear-status)
+    (save-excursion
+      (dolist (block (aside-turn-blocks aside--turn))
+        (aside--redraw block)))
+    (aside--follow windows)))
 
 (defun aside--finish-turn (stop-reason &optional problem)
   "End the turn and show its answer.
@@ -826,6 +845,10 @@ STOP-REASON is why the agent stopped; PROBLEM, if any, why it failed."
                          '(read-only t front-sticky (read-only) rear-nonsticky t))
     (setq buffer-read-only nil)
     (aside--compose)
+    (setq aside--log (append aside--log (list turn)))
+    (when aside--history-shown
+      (aside--hide-full-history)
+      (aside--show-full-history))
     (aside--follow windows)
     (aside-request-mode -1)
     (force-mode-line-update)
@@ -1010,12 +1033,17 @@ With Evil in insert state, switch to normal state, so moving works."
 
 (defun aside--answer (block option)
   "Answer the request in BLOCK with OPTION, a plist from the agent.
-Nil cancels it."
+Nil cancels it.  The answer stays in the turn, for the full history."
   (funcall (plist-get (aside-turn-block-request block) :reply)
            (list :outcome (if option
                               (list :outcome "selected" :optionId (plist-get option :optionId))
                             (list :outcome "cancelled"))))
-  (aside--erase block)
+  (aside--undraw block)
+  (setf (aside-turn-block-kind block) 'decision
+        (aside-turn-block-answer block) (if option (plist-get option :name) "cancelled"))
+  (when aside--history-shown
+    (let ((inhibit-read-only t))
+      (save-excursion (aside--redraw block))))
   (if (aside-turn-requests aside--turn)
       (aside--point-to-request)
     (aside-request-mode -1)
@@ -1023,6 +1051,14 @@ Nil cancels it."
     (dolist (window (get-buffer-window-list nil nil t))
       (set-window-point window (point-max))))
   (force-mode-line-update))
+
+(defun aside-unfold (&optional event)
+  "Show the rest of the folded output at point, or clicked in EVENT."
+  (interactive (list last-nonmenu-event) aside-mode)
+  (let ((pos (if (mouse-event-p event) (posn-point (event-start event)) (point))))
+    (unless (get-text-property pos 'aside-fold)
+      (user-error "Nothing is folded here"))
+    (aside-turn-unfold pos)))
 
 (defun aside-answer-at-point (&optional event)
   "Answer the permission request with the option at point, or clicked in EVENT."
@@ -1106,30 +1142,45 @@ and the end of the turn says so."
 
 ;;;; Resuming
 
+(defconst aside--interrupted-regexp "\\`\\[Request interrupted by user[^]]*\\]\\'"
+  "What Claude Code records as your words when you stopped a turn.")
+
+(defconst aside--compacted-regexp
+  "\\`[ \t\n]*This session is being continued from a previous conversation"
+  "How Claude Code begins the summary it keeps when it compacts a session.")
+
 (defun aside--remember-history (update)
   "Collect UPDATE, replayed while loading a session."
-  (let ((turn (car aside--history)))
-    (if (equal (plist-get update :sessionUpdate) "user_message_chunk")
-        (let ((text (aside-turn--chunk-text (plist-get update :content))))
-          (when (or (null turn) (aside-turn-blocks turn))
-            (setq turn (aside-turn-create :prompt "" :started nil))
-            (push turn aside--history))
-          (when text
-            (setf (aside-turn-prompt turn) (concat (aside-turn-prompt turn) text))))
+  (let ((turn (car aside--history))
+        (text (and (equal (plist-get update :sessionUpdate) "user_message_chunk")
+                   (aside-turn--chunk-text (plist-get update :content)))))
+    (cond
+     ((not (equal (plist-get update :sessionUpdate) "user_message_chunk"))
       (unless turn
         (setq turn (aside-turn-create :prompt "" :started nil))
         (push turn aside--history))
-      (aside-turn-update turn update))))
+      (aside-turn-update turn update))
+     ;; Not something you wrote: the turn before it was stopped.
+     ((and turn text (string-match-p aside--interrupted-regexp (string-trim text)))
+      (setf (aside-turn-stop-reason turn) "cancelled"))
+     (t
+      (when (or (null turn) (aside-turn-blocks turn))
+        (setq turn (aside-turn-create :prompt "" :started nil))
+        (push turn aside--history))
+      (when text
+        (setf (aside-turn-prompt turn) (concat (aside-turn-prompt turn) text)))))))
 
 (defun aside--show-history ()
-  "Show the last answered turn of the loaded session."
+  "Show the last answered turn of the loaded session; keep all of them."
+  (dolist (turn aside--history)
+    (setf (aside-turn-finished turn) t)
+    (unless (aside-turn-stop-reason turn)
+      (setf (aside-turn-stop-reason turn) "end_turn")))
   (let ((turn (cl-find-if (lambda (turn) (not (string-empty-p (aside-turn-answer turn))))
                           aside--history))
         (inhibit-read-only t))
     (erase-buffer)
     (when turn
-      (setf (aside-turn-finished turn) t
-            (aside-turn-stop-reason turn) "end_turn")
       (insert (propertize (string-trim (aside-turn-prompt turn))
                           'line-prefix (aside--prompt-bar) 'wrap-prefix (aside--prompt-bar))
               "\n\n" (aside-turn-divider (aside--label)))
@@ -1137,6 +1188,7 @@ and the end of the turn says so."
       (add-text-properties (point-min) (point-max)
                            '(read-only t front-sticky (read-only) rear-nonsticky t)))
     (setq aside--turn turn
+          aside--log (reverse aside--history)
           aside--history nil)
     (aside--compose)))
 
@@ -1159,6 +1211,110 @@ and the end of the turn says so."
          (aside--show-history)
          (force-mode-line-update)))
      (lambda (err) (aside--failed buffer (aside-acp-error-text err))))))
+
+;;;; The full history
+
+;; The popup shows the last exchange.  C-c C-l shows every turn of the
+;; session above it, in full: whole thoughts, the commands tools ran
+;; and what they printed, your answers to permission requests.  aside
+;; keeps all it sees, because it is all there is: when an agent
+;; compacts a session, replaying it gives back only the summary, and
+;; some agents replay neither thoughts nor output.
+
+(defun aside--full-turn (turn root width name)
+  "Return TURN in full, with paths under ROOT shortened.
+WIDTH is the popup's; NAME, the agent's, for turns that don't say."
+  (with-temp-buffer
+    (let ((prompt (string-trim (aside-turn-prompt turn)))
+          (previous nil))
+      (if (string-match-p aside--compacted-regexp prompt)
+          (insert (propertize (format "%s Earlier turns were compacted; %s kept only this summary\n"
+                                      (aside-turn-glyph 'more) name)
+                              'face 'aside-summary)
+                  (aside-turn-fold (split-string prompt "\n") "  " 'aside-output)
+                  "\n")
+        (insert (propertize prompt 'line-prefix (aside--prompt-bar) 'wrap-prefix (aside--prompt-bar))
+                "\n\n"))
+      (when (or (aside-turn-blocks turn) (not (string-match-p aside--compacted-regexp prompt)))
+        (insert (aside-turn-divider (or (aside-turn-label turn) name))))
+      (dolist (block (aside-turn-blocks turn))
+        (let ((body (aside-turn-block-string block nil root width t)))
+          (unless (string-empty-p body)
+            (let ((start (point)))
+              (insert (aside-turn-separator previous block) body)
+              (when (eq (aside-turn-block-kind block) 'message)
+                (aside-turn-fontify-markdown start (point))))
+            (setq previous block))))
+      (when-let* ((problem (aside-turn-error turn)))
+        (insert "\n" (propertize (concat (aside-turn-glyph 'failed) " " problem)
+                                 'face 'aside-failed 'wrap-prefix "  ")
+                "\n"))
+      (when-let* ((summary (aside-turn-summary turn root)))
+        (insert "\n" summary "\n"))
+      (insert "\n")
+      (buffer-string))))
+
+(defun aside--show-full-history ()
+  "Show every finished turn in full above the usual view."
+  (let* ((inhibit-read-only t)
+         (root aside--root)
+         (width (aside--width))
+         (name (aside--agent-name aside--agent))
+         (text (mapconcat (lambda (turn) (aside--full-turn turn root width name))
+                          aside--log "")))
+    (add-text-properties 0 (length text)
+                         '(read-only t front-sticky (read-only) rear-nonsticky t) text)
+    (save-excursion
+      (goto-char (point-min))
+      ;; Before markers, so the usual view, prompt and all, moves down.
+      (insert-before-markers text)
+      (setq aside--history-end (point-marker)))
+    ;; The last exchange is in the history already, in full.
+    (unless (aside-turn-running-p aside--turn)
+      (setq aside--compact-overlay (make-overlay aside--history-end aside--prompt-start))
+      (overlay-put aside--compact-overlay 'invisible t))
+    (setq aside--history-shown t)
+    (when (aside-turn-running-p aside--turn)
+      (aside--redraw-live))))
+
+(defun aside--hide-full-history ()
+  "Go back to the usual view."
+  (let ((inhibit-read-only t))
+    (when (markerp aside--history-end)
+      (delete-region (point-min) aside--history-end)
+      (set-marker aside--history-end nil))
+    (when (overlayp aside--compact-overlay)
+      (delete-overlay aside--compact-overlay))
+    (setq aside--history-end nil
+          aside--compact-overlay nil
+          aside--history-shown nil)
+    (when (aside-turn-running-p aside--turn)
+      (aside--redraw-live))))
+
+(defun aside--show-end (window)
+  "Scroll WINDOW to the end of the popup, filling it from the top if all fits."
+  (with-selected-window window
+    (goto-char (point-max))
+    (set-window-start window (point-min) t)
+    (unless (pos-visible-in-window-p (point-max) window)
+      (recenter (if (overlayp aside--placeholder) -2 -1)))))
+
+(defun aside-toggle-history ()
+  "Show the whole session in full above the last exchange, or hide it.
+The full history has each turn's thoughts, the commands tools ran and
+what they printed, and your answers to permission requests.  Your
+prompt stays below it, as you left it."
+  (interactive nil aside-mode)
+  (if aside--history-shown
+      (aside--hide-full-history)
+    (unless (or aside--log (aside-turn-running-p aside--turn))
+      (user-error "Nothing has happened in this session yet"))
+    (aside--show-full-history))
+  (dolist (window (get-buffer-window-list nil nil t))
+    (aside--show-end window))
+  (force-mode-line-update)
+  (when aside--history-shown
+    (message "Full history; %s hides it" (aside--key-text 'aside-toggle-history))))
 
 (defun aside--connect-now (agent)
   "Return a ready connection to AGENT, waiting for it to start."
@@ -1229,7 +1385,11 @@ called if you choose none."
               (propertize "loading" 'face 'aside-summary)))
      ((eq aside--state 'failed)
       (propertize (concat (aside-turn-glyph 'failed) " couldn't start") 'face 'aside-failed))
-     (t (aside--usage-text)))))
+     (t (concat (and aside--history-shown
+                     (propertize (format "full history %s %s hides  " (aside-turn-glyph 'dot)
+                                         (aside--key-text 'aside-toggle-history))
+                                 'face 'aside-summary))
+                (aside--usage-text))))))
 
 (defun aside--context-share ()
   "Return the percentage of the context window the session uses, or nil."
@@ -1340,12 +1500,15 @@ Each run of text keeps its properties."
   "C-c C-a" #'aside-switch-agent
   "C-c C-r" #'aside-resume
   "C-c C-x" #'aside-clear-context
+  "C-c C-l" #'aside-toggle-history
   "C-c ?" #'aside-keys)
 
 (keymap-set aside-turn-file-map "<mouse-1>" #'aside-visit-file)
 (keymap-set aside-turn-file-map "RET" #'aside-visit-file)
 (keymap-set aside-turn-option-map "<mouse-1>" #'aside-answer-at-point)
 (keymap-set aside-turn-option-map "RET" #'aside-answer-at-point)
+(keymap-set aside-turn-fold-map "<mouse-1>" #'aside-unfold)
+(keymap-set aside-turn-fold-map "RET" #'aside-unfold)
 
 (defvar evil-ex-commands)
 (declare-function evil-ex-define-cmd "evil-ex")
@@ -1361,7 +1524,8 @@ Send with \\[aside-send] (or :w with Evil).  While the agent works,
 \\[aside-cancel] stops it; otherwise it puts the popup away, as does
 :q.  :wq sends and puts the popup away; you get a notification when
 the agent is done.  When the agent asks permission, the cursor goes to
-its options: move to one and press RET, or click it.
+its options: move to one and press RET, or click it.  \\[aside-toggle-history]
+shows the whole session in full, and hides it again.
 
 \\{aside-mode-map}"
   ;; The fringe holds only the prompt bar: no wrap arrows, and the
@@ -1574,8 +1738,12 @@ With SESSION-ID, load that session through CONN instead."
       (rename-buffer (generate-new-buffer-name
                       (format "*aside: %s (%s)*" (file-name-nondirectory aside--root)
                               (aside--agent-name agent)))))
+    (when (overlayp aside--compact-overlay)
+      (delete-overlay aside--compact-overlay))
     (setq aside--session nil aside--turn nil aside--options nil aside--usage nil
-          aside--context-warned nil aside--state nil aside--problem nil)
+          aside--context-warned nil aside--state nil aside--problem nil
+          aside--log nil aside--history-shown nil aside--history-end nil
+          aside--compact-overlay nil)
     (erase-buffer)
     (aside--compose)
     (if session-id
@@ -1680,6 +1848,8 @@ do; choose one with C-c C-m"
                      '("Model" aside-select-model)
                      '("Effort" aside-select-effort)
                      '("Options" aside-set-option)
+                     (list (if aside--history-shown "Hide the full history" "Full history")
+                           'aside-toggle-history)
                      '("New session" aside-new-session)
                      '("Resume a session" aside-resume)
                      (and aside--context '("Drop the attached regions" aside-clear-context))

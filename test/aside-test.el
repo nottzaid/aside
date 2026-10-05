@@ -556,10 +556,12 @@ puts the popup back as it was whether you choose or cancel."
       (delete-directory one t)
       (delete-directory two t))))
 
-;;;; Resuming
+;;;; Resuming and the full history
 
 (ert-deftest aside-resume-loads-into-the-popup-in-use ()
-  "Resuming from a popup loads the session there; no second popup opens."
+  "Resuming from a popup loads the session there; no second popup opens.
+The full history then has every replayed turn, and a turn Claude Code
+says you interrupted shows as stopped, not as something you wrote."
   (let* ((dir (aside-test--project))
          (aside-agents (list (aside-test--fake 'claude "claude-load" dir)))
          (aside-default-agent 'claude)
@@ -580,7 +582,12 @@ puts the popup back as it was whether you choose or cancel."
                             "the session to load")
           (should (equal (aside--popups) (list popup)))
           (with-current-buffer popup
-            (aside-test--should-show (nth 3 aside-test--prompts))
+            (should-not (string-search (nth 0 aside-test--prompts) (aside-test--text)))
+            (aside-toggle-history)
+            (dolist (prompt aside-test--prompts)
+              (should (string-search prompt (aside-test--text))))
+            (aside-test--should-show "$ echo aside-$((40+2))" "aside-42" "cancelled")
+            (should-not (string-search "Request interrupted" (aside-test--text)))
             (should (equal (aside--prompt-text) ""))))
       (dolist (buffer (aside--popups)) (kill-buffer buffer))
       (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
@@ -607,6 +614,84 @@ list: the agent can't list them, or none were made in this project."
       (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
       (delete-directory dir t)
       (delete-directory elsewhere t))))
+
+(ert-deftest aside-history-shows-every-turn-in-full ()
+  "C-c C-l shows all turns in full above your prompt, which is left as it
+was; C-c C-l again brings back the usual view."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (should-error (aside-toggle-history) :type 'user-error)
+      (aside-test--send (nth 0 aside-test--prompts))
+      (aside-test--finish)
+      (aside-test--send (nth 1 aside-test--prompts))
+      (aside-test--request)
+      (aside-test--answer "Allow once")
+      (aside-test--finish)
+      (aside-test--send (nth 2 aside-test--prompts))
+      (aside-test--request)
+      (aside-test--answer "Allow once")
+      (aside-test--finish)
+      (goto-char (point-max))
+      (insert "a draft")
+      (let ((usual (aside-test--text))
+            (thought (cl-loop for turn in aside--log
+                              thereis (cl-loop for block in (aside-turn-blocks turn)
+                                               when (eq (aside-turn-block-kind block) 'thought)
+                                               return (string-trim (aside-turn--text block))))))
+        (should-not (string-search (nth 0 aside-test--prompts) usual))
+        (aside-toggle-history)
+        (should (string-search "full history" (aside--mode-line)))
+        ;; Every prompt, whole thoughts, commands and what they printed,
+        ;; and your answers.
+        (dolist (prompt (seq-take aside-test--prompts 3))
+          (should (string-search prompt (aside-test--text))))
+        (should (string-search thought (aside-test--text)))
+        (aside-test--should-show "$ echo aside-$((40+2))\n    aside-42"
+                                 "? notes.txt → Allow once" "Wrote file successfully.")
+        ;; The last exchange is there in full, so its short form is hidden.
+        (should (overlay-get aside--compact-overlay 'invisible))
+        (should (equal (aside--prompt-text) "a draft"))
+        (aside-toggle-history)
+        (should (equal (aside-test--text) usual))
+        (should (equal (aside--prompt-text) "a draft"))
+        (should-not (string-search "full history" (aside--mode-line)))))))
+
+(ert-deftest aside-history-stays-through-the-next-turn ()
+  "With the full history shown, the next turn runs below it, and joins it."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (aside-test--send (nth 0 aside-test--prompts))
+      (aside-test--finish)
+      (aside-toggle-history)
+      (aside-test--send (nth 1 aside-test--prompts))
+      (aside-test--request)
+      (should (string-search (nth 0 aside-test--prompts) (aside-test--text)))
+      (aside-test--answer "Allow once")
+      (aside-test--finish)
+      (should aside--history-shown)
+      (should (= (length aside--log) 2))
+      (aside-test--should-show (nth 0 aside-test--prompts) "? notes.txt → Allow once"))))
+
+(ert-deftest aside-history-says-when-turns-were-compacted ()
+  "A session Claude Code compacted replays only its summary, and says so;
+long text folds, and RET on the fold shows the rest."
+  (let* ((summary (concat "This session is being continued from a previous conversation "
+                          "that ran out of context.\nSummary:\n"
+                          (mapconcat #'number-to-string (number-sequence 1 30) "\n")))
+         (turn (aside-turn-create :prompt summary :started nil :finished t
+                                  :stop-reason "end_turn")))
+    (aside-turn-update turn '(:sessionUpdate "agent_message_chunk" :messageId "m"
+                              :content (:type "text" :text "Carrying on.")))
+    (with-temp-buffer
+      (insert (aside--full-turn turn "/p" 70 "Claude Code"))
+      (should (string-search "Earlier turns were compacted; Claude Code kept only this summary"
+                             (buffer-string)))
+      (should (string-search "Carrying on." (buffer-string)))
+      (should-not (string-search "\n  30\n" (buffer-string)))
+      (goto-char (point-min))
+      (search-forward "more lines")
+      (aside-turn-unfold (point))
+      (should (string-search "\n  30\n" (buffer-string))))))
 
 ;;;; Hints
 
@@ -659,9 +744,9 @@ list: the agent can't list them, or none were made in this project."
         (cl-letf (((symbol-function 'aside-cancel) (lambda () (interactive) (setq ran t))))
           (aside-keys)
           (setq shown (aside-test--choose "Hide the popup")))
-        (dolist (text '("Model" "C-c C-m" "Effort" "C-c C-e" "New session" "C-c C-n"
-                        "Resume a session" "Hide the popup" "C-c C-k"
-                        "Select a region before"))
+        (dolist (text '("Model" "C-c C-m" "Effort" "C-c C-e" "Full history" "C-c C-l"
+                        "New session" "C-c C-n" "Resume a session" "Hide the popup"
+                        "C-c C-k" "Select a region before"))
           (should (string-search text shown)))
         (should ran)))))
 

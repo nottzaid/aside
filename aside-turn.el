@@ -37,6 +37,13 @@
   :type 'natnum
   :group 'aside)
 
+(defcustom aside-output-lines 12
+  "How many lines of a tool's output the full history shows at first.
+The rest opens when you press RET on, or click, the line saying how
+many more there are."
+  :type 'natnum
+  :group 'aside)
+
 ;;;; Faces
 
 (defface aside-prompt-bar '((t :inherit font-lock-keyword-face))
@@ -92,6 +99,10 @@ Its background is the text's, whatever colour the theme gives fringes."
   "The line saying what the agent did."
   :group 'aside)
 
+(defface aside-output '((t :inherit shadow))
+  "What a tool printed, in the full history."
+  :group 'aside)
+
 (defface aside-choice-row '((t :inherit hl-line))
   "The choice under the cursor."
   :group 'aside)
@@ -121,7 +132,7 @@ Its background is the text's, whatever colour the theme gives fringes."
   '((done "✓" "+") (failed "✗" "x") (pending "○" "-") (thought "✻" "*")
     (request "?" "?") (cancelled "⊘" "/") (todo "☐" "[ ]") (doing "◐" "[~]")
     (finished "☑" "[x]") (more "…" "...") (bar "▎" "|") (dot "·" "-")
-    (selected "●" "*") (unselected "○" "-"))
+    (selected "●" "*") (unselected "○" "-") (arrow "→" "->"))
   "Glyphs by name, each with an ASCII fallback.")
 
 (defconst aside-turn--spinner '("◐" "◓" "◑" "◒")
@@ -153,17 +164,20 @@ box-drawing character."
 
 (cl-defstruct (aside-turn (:constructor aside-turn-create)
                           (:copier nil))
-  "One prompt and the agent's work on it."
+  "One prompt and the agent's work on it.
+LABEL names the agent and model that answered it."
   prompt blocks
   (started (float-time))
   finished stop-reason error
-  written)
+  written label)
 
 (cl-defstruct (aside-turn-block (:constructor aside-turn-block-create)
                                 (:copier nil))
-  "One visible piece of a turn."
+  "One visible piece of a turn.
+A permission request, once answered, becomes a `decision' block whose
+ANSWER is the name of the option chosen."
   kind id chunks title status tool-kind locations content raw-input
-  entries request marker)
+  raw-output entries request answer marker)
 
 (defun aside-turn--find (turn kind id)
   "Return TURN's block of KIND with ID."
@@ -231,7 +245,8 @@ Return the block whose text changed, or nil if nothing visible did."
     (take :kind aside-turn-block-tool-kind)
     (take :locations aside-turn-block-locations)
     (take :content aside-turn-block-content)
-    (take :rawInput aside-turn-block-raw-input)))
+    (take :rawInput aside-turn-block-raw-input)
+    (take :rawOutput aside-turn-block-raw-output)))
 
 (defun aside-turn-add-request (turn request)
   "Add the permission REQUEST, a plist from the agent, to TURN."
@@ -301,17 +316,21 @@ Return the block whose text changed, or nil if nothing visible did."
                       'display '(space :align-to right))
           "\n"))
 
-(defun aside-turn-block-string (block running root width)
+(defun aside-turn-block-string (block running root width &optional full)
   "Return the text for BLOCK.
 RUNNING is non-nil while the turn is in progress; ROOT shortens paths;
-WIDTH limits one-line summaries."
+WIDTH limits one-line summaries.  FULL shows everything: whole
+thoughts, what each tool was given and printed, and the answers to
+permission requests."
   (pcase (aside-turn-block-kind block)
     ('message (let ((text (aside-turn--text block)))
                 (if (string-empty-p text) "" (concat (string-trim-left text "\n+") "\n"))))
-    ('thought (aside-turn--thought-string block width))
-    ('tool (aside-turn--tool-string block running root))
+    ('thought (aside-turn--thought-string block width full))
+    ('tool (concat (aside-turn--tool-string block running root)
+                   (and full (aside-turn--tool-detail block root))))
     ('plan (aside-turn--plan-string block))
     ('request (aside-turn--request-string block root))
+    ('decision (if full (aside-turn--decision-string block root) ""))
     (_ "")))
 
 (defun aside-turn-separator (previous block)
@@ -324,15 +343,18 @@ are set apart by a blank line."
       "\n"
     ""))
 
-(defun aside-turn--thought-string (block width)
-  "Return the thought BLOCK as configured by `aside-show-thoughts', within WIDTH."
+(defun aside-turn--thought-string (block width &optional full)
+  "Return the thought BLOCK as configured by `aside-show-thoughts', within WIDTH.
+FULL shows all of it whatever the setting."
   (let ((text (string-trim (aside-turn--text block))))
     (cond
-     ((or (null aside-show-thoughts) (string-empty-p text)) "")
-     ((eq aside-show-thoughts 'full)
+     ((string-empty-p text) "")
+     ((or full (eq aside-show-thoughts 'full))
+      ;; Lines after the first sit under it, whether they wrap or not.
       (concat "  " (propertize (aside-turn-glyph 'thought) 'face 'aside-thought) " "
-              (propertize text 'face 'aside-thought 'wrap-prefix "    ")
+              (propertize text 'face 'aside-thought 'line-prefix "    " 'wrap-prefix "    ")
               "\n"))
+     ((null aside-show-thoughts) "")
      (t
       (let ((line (car (last (split-string text "\n+" t "[ \t]+")))))
         (concat "  " (propertize (aside-turn-glyph 'thought) 'face 'aside-thought) " "
@@ -367,6 +389,101 @@ RUNNING animates it while the turn is in progress; ROOT shortens paths."
   (concat "  " (aside-turn--status-glyph (aside-turn-block-status block) running) " "
           (propertize (aside-turn--tool-title block root) 'face 'aside-tool)
           "\n"))
+
+(defun aside-turn--command (block)
+  "Return the shell command the tool BLOCK ran, if it ran one."
+  (let ((command (plist-get (aside-turn-block-raw-input block) :command)))
+    (cond ((and (stringp command) (not (string-blank-p command))) command)
+          ((and (or (consp command) (and (vectorp command) (> (length command) 0)))
+                (cl-every #'stringp command))
+           (mapconcat #'shell-quote-argument command " ")))))
+
+(defun aside-turn--unfence (text)
+  "Return TEXT without a Markdown code fence around all of it."
+  (if (string-match "\\`[ \t]*```[^\n]*\n\\(\\(?:.\\|\n\\)*?\\)\n?[ \t]*```[ \t]*\\'" text)
+      (match-string 1 text)
+    text))
+
+(defun aside-turn--tool-output (block root)
+  "Return what the tool BLOCK printed or changed, as lines, or nil.
+Agents share output as text, as diffs, or only in their raw report."
+  (let ((lines nil))
+    (dolist (item (aside-turn-block-content block))
+      (pcase (plist-get item :type)
+        ("content"
+         (when-let* ((text (aside-turn--chunk-text (plist-get item :content))))
+           (setq lines (append lines (split-string (aside-turn--unfence (string-trim-right text))
+                                                   "\n")))))
+        ("diff"
+         (setq lines
+               (append lines
+                       (list (propertize (aside-turn--relative (plist-get item :path) root)
+                                         'face 'aside-summary))
+                       (mapcar (lambda (line)
+                                 (propertize line 'face (if (string-prefix-p "+" line)
+                                                            'diff-indicator-added
+                                                          'diff-indicator-removed)))
+                               (ignore-errors
+                                 (aside-turn--diff-lines (plist-get item :oldText)
+                                                         (plist-get item :newText)))))))))
+    (unless lines
+      (let* ((raw (aside-turn-block-raw-output block))
+             (text (cond ((stringp raw) raw)
+                         ((and (consp raw) (stringp (plist-get raw :output)))
+                          (plist-get raw :output)))))
+        (when (and text (not (string-blank-p text)))
+          (setq lines (split-string (aside-turn--unfence (string-trim-right text)) "\n")))))
+    lines))
+
+(defvar aside-turn-fold-map (make-sparse-keymap)
+  "Keymap on the line that opens folded output; aside.el binds it.")
+
+(defun aside-turn-fold (lines indent face)
+  "Return LINES, each after INDENT and in FACE, folded after `aside-output-lines'.
+The line standing for the rest opens it, through `aside-turn-unfold'."
+  (let* ((format-line (lambda (line)
+                        (concat indent (propertize line 'face (or (get-text-property 0 'face line)
+                                                                  face))
+                                "\n")))
+         (shown (seq-take lines aside-output-lines))
+         (rest (nthcdr (length shown) lines)))
+    (concat
+     (mapconcat format-line shown "")
+     (when rest
+       (propertize (concat indent
+                           (propertize (format "%s %d more line%s" (aside-turn-glyph 'more)
+                                               (length rest) (if (cdr rest) "s" ""))
+                                       'face 'aside-summary)
+                           "\n")
+                   'aside-fold (mapconcat format-line rest "")
+                   'keymap aside-turn-fold-map
+                   'mouse-face 'highlight
+                   'help-echo "Click or press RET to show the rest")))))
+
+(defun aside-turn-unfold (pos)
+  "Replace the folded line at POS with the lines it stands for."
+  (when-let* ((rest (get-text-property pos 'aside-fold)))
+    (let* ((start (or (previous-single-property-change (1+ pos) 'aside-fold) (point-min)))
+           (end (or (next-single-property-change pos 'aside-fold) (point-max)))
+           (read-only (get-text-property start 'read-only))
+           (inhibit-read-only t))
+      (save-excursion
+        (goto-char start)
+        (delete-region start end)
+        (insert rest)
+        (when read-only
+          (add-text-properties start (point)
+                               '(read-only t front-sticky (read-only) rear-nonsticky t)))))))
+
+(defun aside-turn--tool-detail (block root)
+  "Return what the tool BLOCK was given and what it printed, for the full history."
+  (let ((command (aside-turn--command block))
+        (output (aside-turn--tool-output block root)))
+    (concat
+     (and command
+          (propertize (concat "    $ " (aside-turn--relativize command root) "\n")
+                      'face 'aside-code 'wrap-prefix "      "))
+     (and output (aside-turn-fold output "    " 'aside-output)))))
 
 (defun aside-turn--plan-string (block)
   "Return the plan BLOCK as a checklist."
@@ -457,6 +574,15 @@ Each option is a line of its own; RET on it, or a click, chooses it."
                               'mouse-face 'highlight
                               'help-echo "Click or press RET to choose this"))
                 (plist-get request :options) ""))))
+
+(defun aside-turn--decision-string (block root)
+  "Return the answered request BLOCK, for the full history."
+  (concat "  " (propertize (aside-turn-glyph 'request) 'face 'aside-summary) " "
+          (propertize (concat (aside-turn-request-title (aside-turn-block-request block) root)
+                              " " (aside-turn-glyph 'arrow) " "
+                              (or (aside-turn-block-answer block) "no answer"))
+                      'face 'aside-summary)
+          "\n"))
 
 ;;;; The finished turn
 
