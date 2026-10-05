@@ -318,10 +318,11 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
   "Return non-nil if AGENT's program can be found."
   (executable-find (car (plist-get (aside--spec agent) :command))))
 
-(defun aside--read-agent (&optional title)
+(defun aside--read-agent (&optional title current)
   "Ask which agent to use, in a menu headed TITLE; return it.
-Only agents whose programs can be found are offered.  When just one
-can, it is used without asking."
+CURRENT, or else the agent used last, is marked.  Only agents whose
+programs can be found are offered.  When just one can, it is used
+without asking."
   (let* ((agents (mapcar #'car aside-agents))
          (installed (cl-remove-if-not #'aside--installed-p agents))
          (missing (cl-remove-if #'aside--installed-p agents)))
@@ -335,7 +336,7 @@ can, it is used without asking."
       (_ (aside--menu (or title "Agent")
                       (mapcar (lambda (agent) (list (aside--agent-name agent) agent))
                               installed)
-                      aside--last-agent
+                      (or current aside--last-agent)
                       (and missing (format "Not installed: %s"
                                            (mapconcat #'aside--agent-name missing ", "))))))))
 
@@ -506,9 +507,9 @@ session couldn't be opened, it says why and how to retry."
      "\n" (aside--prompt-bar)
      (aside--key-hints
       (cond (failed `((,send . "retries") ("C-c ?" . "all keys")))
-            (answered '(("C-c C-n" . "new session") ("C-c C-m" . "model")
-                        ("C-c ?" . "all keys")))
-            (t '(("C-c C-m" . "model") ("C-c C-e" . "effort") ("C-c C-o" . "options")
+            (answered '(("C-c C-n" . "new session") ("C-c C-a" . "agent")
+                        ("C-c C-m" . "model") ("C-c ?" . "all keys")))
+            (t '(("C-c C-a" . "agent") ("C-c C-m" . "model") ("C-c C-e" . "effort")
                  ("C-c ?" . "all keys"))))))))
 
 (when (fboundp 'define-fringe-bitmap)
@@ -1382,7 +1383,9 @@ The model, effort and mode it names can be clicked to change them."
                                    "mouse-1: choose the reasoning effort"))
                       (and mode (aside--mode-line-button
                                  mode #'aside-set-option "mouse-1: change an option")))))
-         (left (concat " " (propertize (aside--agent-name aside--agent) 'face 'aside-mode-line-agent)
+         (left (concat " " (aside--mode-line-button
+                            (propertize (aside--agent-name aside--agent) 'face 'aside-mode-line-agent)
+                            #'aside-switch-agent "mouse-1: switch to another agent")
                        (mapconcat (lambda (part) (concat " " (aside-turn-glyph 'dot) " " part))
                                   parts "")))
          (right (aside--mode-line-status)))
@@ -1440,6 +1443,7 @@ Each run of text keeps its properties."
   "C-c C-e" #'aside-select-effort
   "C-c C-o" #'aside-set-option
   "C-c C-n" #'aside-new-session
+  "C-c C-a" #'aside-switch-agent
   "C-c C-r" #'aside-resume
   "C-c C-x" #'aside-clear-context
   "C-c ?" #'aside-keys)
@@ -1525,10 +1529,12 @@ it should use."
   (interactive "P")
   (let* ((context (aside--region-context))
          (root (aside--project-root))
-         (buffer (and (not choose-agent) (aside--project-popup root))))
+         (buffer (and (not choose-agent) (aside--project-popup root)))
+         (remembered nil))
     (if (and buffer (not context) (aside-frame-selected-p buffer))
         (aside-dismiss)
       (unless buffer
+        (setq remembered (and (not choose-agent) (not aside-default-agent) aside--last-agent))
         (setq buffer (aside--create (if choose-agent (aside--read-agent) (aside--default-agent))
                                     root))
         (with-current-buffer buffer (aside--open-session)))
@@ -1536,7 +1542,10 @@ it should use."
         (with-current-buffer buffer (aside--add-context context)))
       (unless (frame-parameter nil 'aside-buffer)
         (with-current-buffer buffer (setq aside--origin-frame (selected-frame))))
-      (aside--show buffer))))
+      (aside--show buffer)
+      (when remembered
+        (message "%s, as last time; %s switches agent" (aside--agent-name remembered)
+                 (aside--key-text 'aside-switch-agent))))))
 
 ;;;###autoload
 (defun aside-resume (&optional choose-agent)
@@ -1599,18 +1608,39 @@ With a prefix argument CHOOSE-AGENT, ask which agent's sessions to list."
 
 (defun aside-new-session (&optional choose-agent)
   "Start over in this popup with a new session.
-With a prefix argument CHOOSE-AGENT, ask which agent to use."
+With a prefix argument CHOOSE-AGENT, ask which agent to use.  The old
+session can still be resumed."
   (interactive "P" aside-mode)
+  (aside--start-over (if choose-agent
+                         (aside--read-agent "Agent" aside--agent)
+                       aside--agent)))
+
+(defun aside-switch-agent ()
+  "Start a new session in this popup with another agent.
+The old session can still be resumed."
+  (interactive nil aside-mode)
+  (unless (cdr (cl-remove-if-not #'aside--installed-p (mapcar #'car aside-agents)))
+    (user-error "%s is the only agent installed" (aside--agent-name aside--agent)))
+  (let ((agent (aside--read-agent "Agent" aside--agent)))
+    (if (eq agent aside--agent)
+        (message "%s it is" (aside--agent-name agent))
+      (aside--start-over agent))))
+
+(defun aside--start-over (agent)
+  "Start a new session with AGENT in this popup."
   (when (aside--busy-p)
     (user-error "%s is still working" (aside--agent-name aside--agent)))
   (let ((inhibit-read-only t))
     (when aside--session (remhash aside--session aside--sessions))
-    (when choose-agent
-      (setq aside--agent (aside--read-agent)
-            aside--last-agent aside--agent
-            aside--conn nil))
+    (unless (eq agent aside--agent)
+      (setq aside--agent agent
+            aside--last-agent agent
+            aside--conn nil)
+      (rename-buffer (generate-new-buffer-name
+                      (format "*aside: %s (%s)*" (file-name-nondirectory aside--root)
+                              (aside--agent-name agent)))))
     (setq aside--session nil aside--turn nil aside--options nil aside--usage nil
-          aside--context-warned nil)
+          aside--context-warned nil aside--state nil aside--problem nil)
     (erase-buffer)
     (aside--compose)
     (aside--open-session)))
@@ -1699,7 +1729,8 @@ do; choose one with C-c C-m"
   (interactive nil aside-mode)
   (let ((actions
          (delq nil
-               (list '("Model" aside-select-model)
+               (list '("Agent" aside-switch-agent)
+                     '("Model" aside-select-model)
                      '("Effort" aside-select-effort)
                      '("Options" aside-set-option)
                      '("New session" aside-new-session)

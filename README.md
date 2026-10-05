@@ -54,7 +54,9 @@ Or clone the repository, add it to `load-path` and `(require 'aside)`.
 ## Use
 
 1. Open a file in a project.
-2. Type `M-x aside`. The first time, push the key of an agent.
+2. Type `M-x aside`. The first time, push the key of an agent. Later
+   popups use the same agent. To use another one, type `C-c C-a` in the
+   popup, or `C-u M-x aside`.
 3. Write a prompt.
 4. Type `C-c C-c` to send it. With Evil, type `:w`.
 
@@ -88,6 +90,7 @@ When aside asks you to choose, it shows all the choices:
 | | `:wq` | Send the prompt and hide the popup. |
 | `C-c C-k` | | Stop the agent. If the agent is idle, hide the popup. |
 | | `:q`, `q` | Hide the popup. The agent continues. |
+| `C-c C-a` | | Switch to another agent. This starts a new session. |
 | `C-c C-m` | | Select the model. |
 | `C-c C-e` | | Select the reasoning effort, if the model has one. |
 | `C-c C-o` | | Set an option of the session, for example the mode or the effort. |
@@ -98,7 +101,7 @@ When aside asks you to choose, it shows all the choices:
 
 An empty prompt shows the keys for the model, the effort and the options.
 The mode line shows the agent, the model, the effort and the mode. Click
-the model, the effort or the mode to change it.
+one of them to change it.
 
 Some models do not reason, and have no effort. For example, OpenCode's
 Big Pickle has none, but its DeepSeek and GLM models have one.

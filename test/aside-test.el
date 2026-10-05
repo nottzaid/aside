@@ -430,8 +430,71 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
   (aside-test--with-agent (opencode "opencode-session")
     (with-current-buffer (aside-test--open dir)
       (let ((hint (substring-no-properties (overlay-get aside--placeholder 'after-string))))
-        (dolist (text '("C-c C-m model" "C-c C-e effort" "C-c C-o options" "Ask OpenCode"))
+        (dolist (text '("C-c C-a agent" "C-c C-m model" "C-c C-e effort" "Ask OpenCode"))
           (should (string-search text hint)))))))
+
+;;;; Agents
+
+(defun aside-test--fake (agent transcript dir)
+  "Return an `aside-agents' entry for AGENT replaying TRANSCRIPT in DIR."
+  (cons agent (list :name (plist-get (alist-get agent aside-agents) :name)
+                    :command (list (expand-file-name invocation-name invocation-directory)
+                                   "--batch" "-Q" "-l"
+                                   (expand-file-name "aside-fake-agent.el" aside-test--dir)
+                                   "-f" "aside-fake-agent" (aside-test--transcript transcript)
+                                   dir))))
+
+(ert-deftest aside-switches-agent-in-the-popup ()
+  "C-c C-a starts the popup over with another agent, and says so in the mode line."
+  (let* ((dir (aside-test--project))
+         (aside-agents (list (aside-test--fake 'opencode "opencode-session" dir)
+                             (aside-test--fake 'claude "claude-session" dir)))
+         (aside-default-agent 'opencode)
+         (aside--connections nil)
+         (aside--last-agent nil)
+         (aside--sessions (make-hash-table :test #'equal))
+         shown)
+    (unwind-protect
+        (with-current-buffer (aside-test--open dir)
+          (cl-letf (((symbol-function 'read-char-choice)
+                     (lambda (prompt _keys &rest _)
+                       (setq shown (substring-no-properties prompt))
+                       (aside-test--key-for "Claude Code" shown))))
+            (aside-switch-agent))
+          (should (string-search "● OpenCode" shown))
+          (aside-test--wait (lambda () (eq aside--state 'ready)) "Claude's session")
+          (should (eq aside--agent 'claude))
+          (should (string-search "Claude Code" (buffer-name)))
+          (should (string-match-p "\\` Claude Code" (substring-no-properties (aside--mode-line))))
+          (should (string-search "Ask Claude Code" (aside-test--hint))))
+      (mapc #'kill-buffer (aside--popups))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory dir t))))
+
+(ert-deftest aside-says-when-it-reuses-the-last-agent ()
+  "Opening a popup with the agent used last says so, and how to switch."
+  (let* ((one (aside-test--project))
+         (two (aside-test--project))
+         (aside-agents (list (aside-test--fake 'opencode "opencode-session" one)
+                             (aside-test--fake 'claude "claude-session" one)))
+         (aside-default-agent nil)
+         (aside--connections nil)
+         (aside--last-agent nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'read-char-choice)
+                     (lambda (prompt _keys &rest _)
+                       (aside-test--key-for "OpenCode" (substring-no-properties prompt)))))
+            (let ((default-directory (file-name-as-directory one))) (aside)))
+          (should (eq aside--last-agent 'opencode))
+          (let ((default-directory (file-name-as-directory two))) (aside))
+          (should (string-search "OpenCode, as last time; C-c C-a switches agent"
+                                 (aside-test--last-message))))
+      (mapc #'kill-buffer (aside--popups))
+      (pcase-dolist (`(,_ . ,conn) aside--connections) (aside-acp-stop conn))
+      (delete-directory one t)
+      (delete-directory two t))))
 
 ;;;; Hints
 
