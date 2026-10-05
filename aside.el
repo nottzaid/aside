@@ -4,7 +4,7 @@
 ;; SPDX-License-Identifier: MIT
 
 ;; Author: nottzaid
-;; Version: 0.4.1
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "30.1"))
 ;; Keywords: tools, convenience
 ;; URL: https://github.com/nottzaid/aside
@@ -36,7 +36,7 @@
 (require 'aside-frame)
 (require 'aside-list)
 
-(defconst aside-version "0.4.1"
+(defconst aside-version "0.5.0"
   "The version of aside.")
 
 (defgroup aside nil
