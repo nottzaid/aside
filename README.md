@@ -54,7 +54,7 @@ Or clone the repository, add it to `load-path` and `(require 'aside)`.
 ## Use
 
 1. Open a file in a project.
-2. Type `M-x aside`. The first time, select an agent.
+2. Type `M-x aside`. The first time, push the key of an agent.
 3. Write a prompt.
 4. Type `C-c C-c` to send it. With Evil, type `:w`.
 
@@ -68,6 +68,17 @@ While the agent works, the popup shows:
 When the agent stops, the popup shows the answer and a summary of the
 work. To ask a follow-up question, write below the answer and send it.
 aside sends only the new text. The agent keeps the history of the session.
+
+### Choices
+
+When aside asks you to choose, it shows all the choices:
+
+- A short list is a menu. Push the key next to a choice. A dot marks
+  the current choice.
+- A long list, such as the models of an agent, opens at once and becomes
+  shorter as you type. Matching ignores case and finds words anywhere.
+  Use the arrow keys to select a choice and RET to choose it. RET on an
+  empty prompt keeps the current choice.
 
 ### Keys in the popup
 

@@ -236,9 +236,8 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
            (aside--connections nil)
            (aside--sessions (make-hash-table :test #'equal)))
       (unwind-protect
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _)
-                       (car (all-completions "" collection)))))
+          (cl-letf (((symbol-function 'read-char-choice)
+                     (lambda (_prompt keys &rest _) (car keys))))
             (let ((default-directory (file-name-as-directory dir))
                   (aside-default-agent agent))
               (aside-resume))
@@ -325,6 +324,62 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
         (setq aside-acp-trace-functions nil))
       (should (= (length sent) 1))
       (should (string-search "\"value\":\"opencode-go/glm-5.3\"" (car sent))))))
+
+;;;; Choosing
+
+(ert-deftest aside-choice-keys-come-from-the-names ()
+  "Menu keys are letters from each name, distinct, or digits when numbered."
+  (should (equal (aside--choice-keys '("OpenCode" "Claude Code" "Codex" "Cline"))
+                 '(?o ?c ?d ?l)))
+  (should (equal (aside--choice-keys '("Manual" "Accept edits" "Plan" "Auto" "Bypass permissions"))
+                 '(?m ?a ?p ?u ?b)))
+  (should (equal (aside--choice-keys '("x" "y" "z") t) '(?1 ?2 ?3))))
+
+(ert-deftest aside-offers-only-installed-agents ()
+  "The agent menu lists agents that can run; one is used without asking."
+  (let ((aside-agents '((here :name "Here" :command ("sh"))
+                        (there :name "There" :command ("true"))
+                        (gone :name "Gone" :command ("aside-no-such-program")
+                              :install "npm install -g gone")))
+        (aside--last-agent nil)
+        offered note)
+    (cl-letf (((symbol-function 'aside--menu)
+               (lambda (_title choices &optional _current menu-note &rest _)
+                 (setq offered (mapcar #'car choices) note menu-note)
+                 (cadr (car choices)))))
+      (should (eq (aside--read-agent) 'here))
+      (should (equal offered '("Here" "There")))
+      (should (equal note "Not installed: Gone")))
+    (setq aside-agents '((here :name "Here" :command ("sh"))
+                         (gone :name "Gone" :command ("aside-no-such-program"))))
+    (should (eq (aside--read-agent) 'here))
+    (setq aside-agents '((gone :name "Gone" :command ("aside-no-such-program")
+                               :install "npm install -g gone")))
+    (should-error (aside--read-agent) :type 'user-error)))
+
+(ert-deftest aside-option-menu-sets-the-chosen-value ()
+  "C-c C-o lists the session's options; choosing Mode then Plan sets it."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      ;; OpenCode offers Model and Session Mode, whose values it names
+      ;; in lower case; the menus capitalize them.
+      (let ((keys (list ?s ?p)) sent prompts)
+        (add-hook 'aside-acp-trace-functions
+                  (lambda (_ direction line)
+                    (when (and (eq direction 'out) (string-search "set_config_option" line))
+                      (push line sent))))
+        (unwind-protect
+            (cl-letf (((symbol-function 'read-char-choice)
+                       (lambda (prompt _keys &rest _)
+                         (push (substring-no-properties prompt) prompts)
+                         (pop keys))))
+              (aside-set-option))
+          (setq aside-acp-trace-functions nil))
+        (should (string-search "s  Session Mode" (cadr prompts)))
+        (should (string-search "Build" (car prompts)))
+        (should (string-search "Plan" (car prompts)))
+        (should (string-search "\"configId\":\"mode\"" (car sent)))
+        (should (string-search "\"value\":\"plan\"" (car sent)))))))
 
 ;;;; The transport
 

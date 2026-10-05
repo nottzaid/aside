@@ -96,6 +96,166 @@ and values, such as ((claude (\"model\" . \"haiku\"))).  In a popup,
   "The agent's name in the mode line."
   :group 'aside)
 
+;;;; Choosing
+
+;; Every question aside asks shows its answers.  Up to ten choices make
+;; a menu, answered with one key; longer lists use completion, with the
+;; whole list shown at once.
+
+(defface aside-choice-title '((t :inherit bold))
+  "The heading of a menu of choices."
+  :group 'aside)
+
+(defface aside-choice-current '((t :inherit (bold font-lock-keyword-face)))
+  "The choice in use."
+  :group 'aside)
+
+(defconst aside--menu-limit 10
+  "The most choices a menu offers; longer lists use completion.")
+
+(defun aside--choice-keys (labels &optional numbered)
+  "Return a distinct key for each of LABELS.
+Keys are letters from each label where possible.  With NUMBERED, they
+are digits, for choices in an order such as recency."
+  (let ((used nil))
+    (mapcar (lambda (label)
+              (let ((key (or (and (not numbered)
+                                  (cl-find-if (lambda (char)
+                                                (and (<= ?a char ?z) (not (memq char used))))
+                                              (downcase label)))
+                             (cl-find-if (lambda (char) (not (memq char used)))
+                                         "1234567890"))))
+                (push key used)
+                key))
+            labels)))
+
+(defun aside--menu-row (key choice width radio current)
+  "Return the menu line offering CHOICE on KEY.
+WIDTH is the width of the widest label.  RADIO adds a column marking
+the choice whose value is CURRENT."
+  (pcase-let* ((`(,label ,value ,note) choice)
+               (chosen (and radio (equal value current))))
+    (concat "  " (propertize (string key) 'face 'aside-key) "  "
+            (cond ((not radio) "")
+                  (chosen (propertize (concat (aside-turn-glyph 'selected) " ")
+                                      'face 'aside-choice-current))
+                  (t (propertize (concat (aside-turn-glyph 'unselected) " ")
+                                 'face 'aside-summary)))
+            (propertize label 'face (if chosen 'aside-choice-current 'default))
+            (when note
+              (concat (propertize " " 'display
+                                  `(space :align-to ,(+ width (if radio 10 8))))
+                      (propertize (truncate-string-to-width
+                                   note (max 20 (- (frame-width) width 14)) nil nil
+                                   (aside-turn-glyph 'more))
+                                  'face 'aside-summary)))
+            "\n")))
+
+(defun aside--menu (title choices &optional current note numbered)
+  "Ask for one of CHOICES with a single key, and return its value.
+Each choice is a list (LABEL VALUE NOTE), where NOTE may be nil.  The
+menu shows TITLE, then every choice with its key and note, then NOTE.
+When CURRENT is one of the values, the menu marks it as in use.
+NUMBERED keys the choices by digit instead of by letter."
+  (let* ((keys (aside--choice-keys (mapcar #'car choices) numbered))
+         (radio (and (cl-find current choices :key #'cadr :test #'equal) t))
+         (width (apply #'max (mapcar (lambda (choice) (string-width (car choice))) choices)))
+         (prompt
+          (concat (aside--prompt-bar) (propertize title 'face 'aside-choice-title) "\n"
+                  (apply #'concat (cl-mapcar (lambda (key choice)
+                                               (aside--menu-row key choice width radio current))
+                                             keys choices))
+                  (and note (concat "  " (propertize note 'face 'aside-summary) "\n"))
+                  (propertize (format "  press a key %s C-g cancels " (aside-turn-glyph 'dot))
+                              'face 'aside-summary)))
+         ;; Room for the whole menu, even in a small popup frame.
+         (max-mini-window-height (+ (length choices) 4)))
+    (cadr (nth (cl-position (read-char-choice prompt keys) keys) choices))))
+
+(defun aside--plain-completion-p ()
+  "Return non-nil if completion shows its list in the *Completions* buffer."
+  (and (eq completing-read-function #'completing-read-default)
+       (not (bound-and-true-p icomplete-mode))
+       (not (bound-and-true-p vertico-mode))))
+
+(defun aside--complete (title choices &optional current noun default)
+  "Ask for one of CHOICES with completion, and return its value.
+CHOICES are as for `aside--menu'.  The whole list shows at once and
+narrows as you type; matching ignores case and finds words anywhere.
+CURRENT marks the value in use, NOUN names the choices in the count
+above the list, and DEFAULT is the value RET picks on an empty prompt;
+it defaults to CURRENT."
+  (let* ((labels (mapcar #'car choices))
+         (width (apply #'max (mapcar #'string-width labels)))
+         (default (or default current))
+         (default-label (car (cl-find default choices :key #'cadr :test #'equal)))
+         (affix
+          (lambda (labels)
+            (mapcar (lambda (label)
+                      (pcase-let ((`(,_ ,value ,note) (assoc-string label choices t)))
+                        (list label
+                              (if (and current (equal value current))
+                                  (propertize (concat (aside-turn-glyph 'selected) " ")
+                                              'face 'aside-choice-current)
+                                "  ")
+                              (if note
+                                  (concat (propertize " " 'display
+                                                      `(space :align-to ,(+ width 5)))
+                                          (propertize note 'face 'aside-summary))
+                                ""))))
+                    labels)))
+         (table (lambda (string pred action)
+                  (if (eq action 'metadata)
+                      `(metadata (category . aside-choice)
+                                 (display-sort-function . identity)
+                                 (cycle-sort-function . identity)
+                                 (affixation-function . ,affix)
+                                 (eager-display . t)
+                                 (eager-update . t))
+                    (complete-with-action action labels string pred))))
+         (completion-ignore-case t)
+         (completions-format 'one-column)
+         (completion-show-help nil)
+         (completions-header-format
+          (propertize (format "%%s %s\n" (or noun "choices")) 'face 'aside-summary))
+         (minibuffer-visible-completions t)
+         (completion-list-mode-hook (cons #'aside--tidy-completions
+                                          completion-list-mode-hook))
+         (choice
+          (minibuffer-with-setup-hook
+              (lambda ()
+                ;; Show the list now.  Emacs 31's own eager display waits
+                ;; for an idle moment, which the focus events of a newly
+                ;; raised popup can postpone until you type.  Emacs 31
+                ;; then keeps the list up to date itself.
+                (when (aside--plain-completion-p)
+                  (minibuffer-completion-help)
+                  (when (< emacs-major-version 31)
+                    (add-hook 'after-change-functions
+                              (lambda (&rest _) (minibuffer-completion-help)) nil t))))
+            (completing-read (format-prompt title default-label) table nil t
+                             nil nil default-label))))
+    (cadr (assoc-string choice choices t))))
+
+(defun aside--tidy-completions ()
+  "Keep the list of choices plain: no line numbers, mode line or cursor."
+  (setq-local display-line-numbers-type nil
+              display-line-numbers nil
+              mode-line-format nil
+              cursor-in-non-selected-windows nil))
+
+(add-to-list 'completion-category-defaults
+             '(aside-choice (styles basic substring partial-completion)))
+
+(defun aside--pick (title choices &optional current noun numbered default)
+  "Ask for one of CHOICES: in a menu when they are few, else by completion.
+TITLE, CURRENT, NOUN, NUMBERED and DEFAULT are as for `aside--menu'
+and `aside--complete'."
+  (cond ((null choices) (user-error "There is nothing to choose from"))
+        ((<= (length choices) aside--menu-limit)
+         (aside--menu title choices (or current default) nil numbered))
+        (t (aside--complete title choices current noun default))))
+
 ;;;; State
 
 (defvar aside--connections nil
@@ -153,27 +313,26 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
   "Return non-nil if AGENT's program can be found."
   (executable-find (car (plist-get (aside--spec agent) :command))))
 
-(defun aside--read-agent (&optional prompt)
-  "Ask which agent to use, with PROMPT."
-  (let* ((names (mapcar (lambda (entry) (cons (aside--agent-name (car entry)) (car entry)))
-                        aside-agents))
-         (annotate (lambda (name)
-                     (let ((agent (cdr (assoc name names))))
-                       (propertize
-                        (if (aside--installed-p agent)
-                            (concat "  " (string-join (plist-get (aside--spec agent) :command) " "))
-                          (concat "  not found: " (plist-get (aside--spec agent) :install)))
-                        'face 'completions-annotations))))
-         (default (and aside--last-agent (aside--agent-name aside--last-agent)))
-         (choice (completing-read
-                  (format-prompt (or prompt "Agent") default)
-                  (lambda (string pred action)
-                    (if (eq action 'metadata)
-                        `(metadata (category . aside-agent)
-                                   (annotation-function . ,annotate))
-                      (complete-with-action action names string pred)))
-                  nil t nil nil default)))
-    (cdr (assoc choice names))))
+(defun aside--read-agent (&optional title)
+  "Ask which agent to use, in a menu headed TITLE; return it.
+Only agents whose programs can be found are offered.  When just one
+can, it is used without asking."
+  (let* ((agents (mapcar #'car aside-agents))
+         (installed (cl-remove-if-not #'aside--installed-p agents))
+         (missing (cl-remove-if #'aside--installed-p agents)))
+    (pcase installed
+      ('nil (user-error "No agent found on `exec-path'.  Install one: %s"
+                        (mapconcat (lambda (agent)
+                                     (format "%s (%s)" (aside--agent-name agent)
+                                             (plist-get (aside--spec agent) :install)))
+                                   agents "; ")))
+      (`(,only) only)
+      (_ (aside--menu (or title "Agent")
+                      (mapcar (lambda (agent) (list (aside--agent-name agent) agent))
+                              installed)
+                      aside--last-agent
+                      (and missing (format "Not installed: %s"
+                                           (mapconcat #'aside--agent-name missing ", "))))))))
 
 (defun aside--default-agent ()
   "Return the agent for a new popup, asking the first time."
@@ -527,25 +686,36 @@ Options can depend on each other, so they are set one at a time."
   (or (cl-find id aside--options :key (lambda (o) (plist-get o :id)) :test #'equal)
       (cl-find id aside--options :key (lambda (o) (plist-get o :category)) :test #'equal)))
 
+(defun aside--capitalized (name)
+  "Return NAME starting with a capital letter."
+  (if (string-match-p "\\`[[:lower:]]" name)
+      (concat (upcase (substring name 0 1)) (substring name 1))
+    name))
+
 (defun aside--tidy-name (name)
   "Return NAME without a provider prefix, starting with a capital.
 OpenCode, for one, calls its models \"OpenCode Zen/Big Pickle\" and
 its modes \"build\"."
-  (let ((name (car (last (split-string name "/" t " ")))))
-    (if (string-match-p "\\`[[:lower:]]" name)
-        (concat (upcase (substring name 0 1)) (substring name 1))
-      name)))
+  (aside--capitalized (car (last (split-string name "/" t " ")))))
 
 (defun aside--option-label (id)
-  "Return a short name for the current value of the option ID."
+  "Return a short name for the current value of the option ID.
+On-off options are named only when they are on."
   (when-let* ((option (aside--option id)))
-    (let* ((value (plist-get option :currentValue))
-           (choice (cl-find value (plist-get option :options)
-                            :key (lambda (o) (plist-get o :value)) :test #'equal)))
-      (cond (choice (aside--tidy-name (plist-get choice :name)))
-            ((eq value t) (concat (plist-get option :name) " on"))
+    (let ((value (plist-get option :currentValue)))
+      (cond ((eq value t) (concat (plist-get option :name) " on"))
             ((memq value '(nil :false)) nil)
-            (t (aside--tidy-name (format "%s" value)))))))
+            (t (aside--value-name option))))))
+
+(defun aside--value-name (option)
+  "Return a short name for OPTION's current value."
+  (let* ((value (plist-get option :currentValue))
+         (choice (cl-find value (plist-get option :options)
+                          :key (lambda (o) (plist-get o :value)) :test #'equal)))
+    (cond (choice (aside--tidy-name (plist-get choice :name)))
+          ((eq value t) "On")
+          ((memq value '(nil :false)) "Off")
+          (t (aside--tidy-name (format "%s" value))))))
 
 (defun aside--set-option-value (id value &optional then)
   "Set the session option ID to VALUE, then call THEN."
@@ -1046,39 +1216,26 @@ and the end of the turn says so."
     ""))
 
 (defun aside--read-session (conn root)
-  "Ask which of ROOT's sessions on CONN to resume; return its id."
+  "Ask which of ROOT's sessions on CONN to resume; return its id.
+The most recent comes first, and RET on an empty prompt picks it."
   (let* ((sessions (plist-get (aside-acp-request-sync conn "session/list" (list :cwd root))
                               :sessions))
          (sessions (cl-remove-if-not (lambda (s) (equal (plist-get s :cwd) root)) sessions))
          (seen (make-hash-table :test #'equal))
          (choices
           (mapcar (lambda (session)
-                    (let* ((title (string-trim (or (plist-get session :title) "Untitled")))
-                           (n (cl-incf (gethash title seen 0)))
-                           (label (if (> n 1) (format "%s <%d>" title n) title)))
-                      (cons label session)))
+                    (let* ((title (truncate-string-to-width
+                                   (string-trim (or (plist-get session :title) "Untitled"))
+                                   50 nil nil (aside-turn-glyph 'more)))
+                           (n (cl-incf (gethash title seen 0))))
+                      (list (if (> n 1) (format "%s <%d>" title n) title)
+                            (plist-get session :sessionId)
+                            (aside--relative-time (plist-get session :updatedAt)))))
                   sessions)))
     (unless choices
       (user-error "No earlier %s sessions in %s" (aside--agent-name (aside--agent-of conn))
                   (abbreviate-file-name root)))
-    (plist-get
-     (cdr (assoc (completing-read
-                  "Resume: "
-                  (lambda (string pred action)
-                    (if (eq action 'metadata)
-                        `(metadata (category . aside-session)
-                                   (display-sort-function . identity)
-                                   (annotation-function
-                                    . ,(lambda (label)
-                                         (propertize
-                                          (concat "  " (aside--relative-time
-                                                        (plist-get (cdr (assoc label choices))
-                                                                   :updatedAt)))
-                                          'face 'completions-annotations))))
-                      (complete-with-action action choices string pred)))
-                  nil t)
-                 choices))
-     :sessionId)))
+    (aside--pick "Resume" choices nil "sessions" t (cadr (car choices)))))
 
 ;;;; The mode line
 
@@ -1340,33 +1497,30 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
   (setf (alist-get id (alist-get aside--agent aside--preferences) nil nil #'equal) value))
 
 (defun aside--choose-value (option)
-  "Ask for a new value of OPTION and set it."
-  (let ((id (plist-get option :id)))
-    (if (equal (plist-get option :type) "boolean")
-        (let ((value (if (eq (plist-get option :currentValue) t) :false t)))
-          (aside--remember id value)
-          (aside--set-option-value id value))
-      (let* ((choices (mapcar (lambda (o) (cons (plist-get o :name) o))
-                              (plist-get option :options)))
-             (current (car (cl-find (plist-get option :currentValue) choices
-                                    :key (lambda (c) (plist-get (cdr c) :value))
-                                    :test #'equal)))
-             (choice (completing-read
-                      (format-prompt (plist-get option :name) current)
-                      (lambda (string pred action)
-                        (if (eq action 'metadata)
-                            `(metadata (display-sort-function . identity)
-                                       (annotation-function
-                                        . ,(lambda (name)
-                                             (when-let* ((d (plist-get (cdr (assoc name choices))
-                                                                       :description)))
-                                               (propertize (concat "  " d)
-                                                           'face 'completions-annotations)))))
-                          (complete-with-action action choices string pred)))
-                      nil t nil nil current))
-             (value (plist-get (cdr (assoc choice choices)) :value)))
-        (aside--remember id value)
-        (aside--set-option-value id value)))))
+  "Ask for a new value of OPTION and set it; switch it if it is on-off."
+  (let* ((id (plist-get option :id))
+         (name (plist-get option :name))
+         (value
+          (if (equal (plist-get option :type) "boolean")
+              (if (eq (plist-get option :currentValue) t) :false t)
+            ;; Model names share prefixes such as "OpenCode Go/", so
+            ;; letters from them make poor keys; number models instead.
+            (let ((models (equal (plist-get option :category) "model")))
+              (aside--pick name
+                           (mapcar (lambda (o)
+                                     (list (aside--capitalized (plist-get o :name))
+                                           (plist-get o :value)
+                                           (plist-get o :description)))
+                                   (plist-get option :options))
+                           (plist-get option :currentValue)
+                           (if models "models" "choices")
+                           models)))))
+    (aside--remember id value)
+    (aside--set-option-value
+     id value
+     (lambda ()
+       (message "%s: %s" name
+                (aside--value-name (or (aside--option id) option)))))))
 
 (defun aside--require-session ()
   "Signal unless this popup's session is open."
@@ -1385,15 +1539,12 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
   "Change one of the session's options, such as its mode or reasoning effort."
   (interactive nil aside-mode)
   (aside--require-session)
-  (let* ((choices (mapcar (lambda (option)
-                            (cons (format "%s: %s" (plist-get option :name)
-                                          (or (let ((aside--options (list option)))
-                                                (aside--option-label (plist-get option :id)))
-                                              "off"))
-                                  option))
-                          aside--options))
-         (choice (completing-read "Option: " choices nil t)))
-    (aside--choose-value (cdr (assoc choice choices)))))
+  (aside--choose-value
+   (aside--menu "Option"
+                (mapcar (lambda (option)
+                          (list (aside--capitalized (plist-get option :name)) option
+                                (aside--value-name option)))
+                        aside--options))))
 
 ;;;###autoload
 (defun aside-stop-agents ()

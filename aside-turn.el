@@ -104,7 +104,8 @@
 (defconst aside-turn--glyphs
   '((done "✓" "+") (failed "✗" "x") (pending "○" "-") (thought "✻" "*")
     (request "?" "?") (cancelled "⊘" "/") (todo "☐" "[ ]") (doing "◐" "[~]")
-    (finished "☑" "[x]") (more "…" "...") (bar "▎" "|") (dot "·" "-"))
+    (finished "☑" "[x]") (more "…" "...") (bar "▎" "|") (dot "·" "-")
+    (selected "●" "*") (unselected "○" " "))
   "Glyphs by name, each with an ASCII fallback.")
 
 (defconst aside-turn--spinner '("◐" "◓" "◑" "◒")

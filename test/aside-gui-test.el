@@ -70,6 +70,55 @@ A stretch fills its line, so the bar runs unbroken down a long prompt."
     (should (string-prefix-p (aside-turn-glyph 'bar)
                              (substring-no-properties (aside--prompt-bar))))))
 
+(defun aside-gui--type (&rest events)
+  "Type EVENTS once the next prompt is waiting."
+  (run-at-time 0.3 nil (lambda () (setq unread-command-events events))))
+
+(ert-deftest aside-gui-menu-answers-with-one-key ()
+  "A menu lists every choice and returns the one whose key is pressed."
+  (skip-unless (display-graphic-p))
+  (let (shown)
+    (run-at-time 0.3 nil (lambda ()
+                           (setq shown (minibuffer-contents-no-properties)
+                                 shown (with-current-buffer (window-buffer (minibuffer-window))
+                                         (buffer-string)))
+                           (setq unread-command-events (list ?p))))
+    (should (eq (aside--menu "Mode" '(("Build" build) ("Plan" plan "Read only")) 'build)
+                'plan))
+    (should (string-search "Plan" shown))
+    (should (string-search "Read only" shown))))
+
+(ert-deftest aside-gui-completion-shows-the-list-and-ignores-case ()
+  "Long lists show at once in the popup, match any case, and default on RET."
+  (skip-unless (display-graphic-p))
+  (let ((models (mapcar (lambda (name) (list name (downcase name) nil))
+                        '("OpenCode Zen/Big Pickle" "OpenCode Go/DeepSeek V4 Flash" "Cline"
+                          "OpenCode Go/GLM-5.3" "OpenCode Go/Grok 4.7" "OpenCode Go/Hy3"
+                          "OpenCode Go/Kimi K3" "OpenCode Go/Qwen 4 Coder" "OpenCode Go/GPT-6 Luna"
+                          "OpenCode Go/GLM-5.2" "OpenCode Go/Grok 4.6")))
+        listed)
+    (aside-test--with-agent (opencode "opencode-session")
+      (aside-test--open dir)
+      (run-at-time 0.5 nil
+                   (lambda ()
+                     (let ((window (get-buffer-window "*Completions*" t)))
+                       (setq listed (and window
+                                         (list (window-frame window)
+                                               (buffer-local-value 'display-line-numbers
+                                                                   (window-buffer window))))))
+                     (setq unread-command-events (append "cline" '(return)))))
+      (should (equal (aside--complete "Model" models nil "models") "cline"))
+      (should (eq (car listed) (selected-frame)))
+      (should-not (cadr listed))
+      ;; Type, wait for the list to narrow, then pick its first entry.
+      (aside-gui--type ?d ?e ?e ?p)
+      (run-at-time 0.9 nil (lambda () (setq unread-command-events (list 'down 'return))))
+      (should (equal (aside--complete "Model" models nil "models")
+                     "opencode go/deepseek v4 flash"))
+      (aside-gui--type 'return)
+      (should (equal (aside--complete "Model" models "opencode go/hy3" "models")
+                     "opencode go/hy3")))))
+
 (defun aside-gui-run ()
   "Run these tests, print the results and exit with their status."
   (let ((stats (ert-run-tests-batch "\\`aside-gui-")))
