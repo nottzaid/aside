@@ -39,10 +39,15 @@ find a program, add its directory:
 
 ```elisp
 (use-package aside
-  :vc (:url "https://github.com/nottzaid/aside")
+  :vc (:url "https://github.com/nottzaid/aside" :rev :newest)
   :bind (("C-c o" . aside)
-         ("C-c h" . aside-toggle)))
+         ("C-c h" . aside-toggle)
+         ("C-c r" . aside-resume)))
 ```
+
+`:rev :newest` installs the newest commit. Without it, `package-vc` installs
+the last commit that changed the version. To update, type
+`M-x package-vc-upgrade RET aside`.
 
 Or clone the repository, add it to `load-path` and `(require 'aside)`.
 
