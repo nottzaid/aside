@@ -66,7 +66,7 @@ While the agent works, the popup shows:
   option.
 
 When the agent stops, the popup shows the answer and a summary of the
-work. To ask a follow-up question, write below the answer and send it.
+work. Click a file name in the summary, or push RET on it, to open the file. To ask a follow-up question, write below the answer and send it.
 aside sends only the new text. The agent keeps the history of the session.
 
 ### Choices
@@ -94,6 +94,7 @@ When aside asks you to choose, it shows all the choices:
 | `C-c C-n` | | Start a new session. With `C-u`, select the agent. |
 | `C-c C-r` | | Resume an earlier session. |
 | `C-c C-x` | | Remove the attached regions. |
+| `C-c ?` | | Show all the keys. Push one to do its action. |
 
 An empty prompt shows the keys for the model, the effort and the options.
 The mode line shows the agent, the model, the effort and the mode. Click
@@ -131,8 +132,8 @@ aside did not revert.
 ### Hidden popups
 
 The agent continues when you hide the popup. When the agent stops, aside
-sends a desktop notification. When the agent asks for permission, aside
-shows the popup again.
+sends a desktop notification. Click the notification to show the popup.
+When the agent asks for permission, aside shows the popup again.
 
 ## Configure
 

@@ -433,6 +433,135 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
         (dolist (text '("C-c C-m model" "C-c C-e effort" "C-c C-o options" "Ask OpenCode"))
           (should (string-search text hint)))))))
 
+;;;; Hints
+
+(defun aside-test--hint ()
+  "Return the hint in the empty prompt, without properties."
+  (substring-no-properties (overlay-get aside--placeholder 'after-string)))
+
+(defun aside-test--last-message ()
+  "Return the last line logged in *Messages*."
+  (with-current-buffer "*Messages*"
+    (save-excursion
+      (goto-char (point-max))
+      (string-trim (buffer-substring-no-properties (line-beginning-position 0) (point-max))))))
+
+(ert-deftest aside-hint-fits-the-moment ()
+  "The empty prompt invites a first question, then a follow-up or a new session."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (should (string-search "Ask OpenCode" (aside-test--hint)))
+      (should (string-search "C-c ? all keys" (aside-test--hint)))
+      (aside-test--send (nth 0 aside-test--prompts))
+      (aside-test--finish)
+      (should (string-search "Follow up with OpenCode" (aside-test--hint)))
+      (should (string-search "C-c C-n new session" (aside-test--hint))))))
+
+(ert-deftest aside-hint-keeps-the-reason-a-session-failed ()
+  "When the agent won't start, the empty prompt says why and how to retry."
+  (let* ((dir (aside-test--project))
+         (aside-agents '((codex :name "Codex"
+                                :command ("sh" "-c" "echo 'Error: no credentials' >&2; exit 1"))))
+         (aside-default-agent 'codex)
+         (aside--connections nil)
+         (aside--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (with-current-buffer (let ((default-directory (file-name-as-directory dir)))
+                               (aside)
+                               (current-buffer))
+          (aside-test--wait (lambda () (eq aside--state 'failed)) "the failure")
+          (should (string-search "Codex stopped" (aside-test--hint)))
+          (should (string-search "Error: no credentials" (aside-test--hint)))
+          (should (string-search "C-c C-c retries" (aside-test--hint))))
+      (mapc #'kill-buffer (aside--popups))
+      (delete-directory dir t))))
+
+(ert-deftest aside-keys-menu-lists-and-runs-the-keys ()
+  "C-c ? lists what you can do, with each key, and does what you pick."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (let (shown ran)
+        (cl-letf (((symbol-function 'read-char-choice)
+                   (lambda (prompt _keys &rest _)
+                     (setq shown (substring-no-properties prompt))
+                     (aside-test--key-for "Hide the popup" shown)))
+                  ((symbol-function 'aside-cancel) (lambda () (interactive) (setq ran t))))
+          (aside-keys))
+        (dolist (text '("Model" "C-c C-m" "Effort" "C-c C-e" "New session" "C-c C-n"
+                        "Resume a session" "Hide the popup" "C-c C-k"
+                        "Select a region before"))
+          (should (string-search text shown)))
+        (should ran)))))
+
+(ert-deftest aside-says-how-to-stop-and-that-hidden-work-goes-on ()
+  "While working, the mode line says how to stop; hiding says it continues."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (aside-test--send (nth 0 aside-test--prompts))
+      (aside-test--finish)
+      (aside-test--send (nth 1 aside-test--prompts))
+      (aside-test--request)
+      (aside-answer "o")
+      (setq aside--queued "next")
+      (should (string-search "C-c C-k stops" (substring-no-properties (aside--mode-line-status))))
+      (aside-dismiss)
+      (should (string-search "OpenCode keeps working" (aside-test--last-message)))
+      (setq aside--queued nil)
+      (aside-test--finish))))
+
+(ert-deftest aside-summary-links-edited-files ()
+  "Files named in the summary open, in the frame the popup came from."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (aside-test--send (nth 0 aside-test--prompts))
+      (aside-test--finish)
+      (aside-test--send (nth 1 aside-test--prompts))
+      (aside-test--request)
+      (aside-answer "o")
+      (aside-test--finish)
+      (goto-char (point-min))
+      (search-forward "edited notes.txt")
+      (goto-char (match-end 0))
+      (backward-char 2)
+      (should (equal (get-text-property (point) 'aside-file)
+                     (expand-file-name "notes.txt" dir)))
+      (should (eq (lookup-key (get-text-property (point) 'keymap) (kbd "RET")) #'aside-visit-file))
+      (let ((popup (current-buffer)))
+        (aside-visit-file)
+        (should (equal buffer-file-name (expand-file-name "notes.txt" dir)))
+        (kill-buffer)
+        (set-buffer popup)))))
+
+(ert-deftest aside-warns-once-when-the-context-is-nearly-full ()
+  "At 80% of the context window, aside says so once and suggests a new session."
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (aside--update '(:sessionUpdate "usage_update" :used 170000 :size 200000))
+      (should (string-search "85% of this session" (aside-test--last-message)))
+      (should (string-search "C-c C-n starts a new session" (aside-test--last-message)))
+      (message "something else")
+      (aside--update '(:sessionUpdate "usage_update" :used 180000 :size 200000))
+      (should (equal (aside-test--last-message) "something else"))
+      (should (eq (get-text-property 0 'face (aside--usage-text)) 'aside-request)))))
+
+(ert-deftest aside-marks-free-models-and-says-what-a-model-means-for-effort ()
+  "Free models are marked; after a model change, aside says if it has effort."
+  (should (equal (aside--value-note '(:name "Nex N2.5 Pro" :value "nex-agi/nex-n2.5-pro:free"))
+                 "free"))
+  (should (equal (aside--value-note '(:name "Space Bunny" :value "opencode/space-bunny-free"))
+                 "free"))
+  (should-not (aside--value-note '(:name "Space Bunny Free" :value "opencode/space-bunny-free")))
+  (should-not (aside--value-note '(:name "Big Pickle" :value "opencode/big-pickle")))
+  (should (equal (aside--value-note '(:name "Plan" :value "plan" :description "Plans only"))
+                 "Plans only"))
+  (aside-test--with-agent (opencode "opencode-session")
+    (with-current-buffer (aside-test--open dir)
+      (cl-letf (((symbol-function 'aside--pick) (lambda (&rest _) "opencode/big-pickle")))
+        (aside-select-model))
+      (aside-test--wait (lambda () (string-prefix-p "Model:" (aside-test--last-message)))
+                        "the confirmation")
+      (should (equal (aside-test--last-message) "Model: Big Pickle · no effort setting")))))
+
 ;;;; The transport
 
 (ert-deftest aside-acp-reassembles-split-lines ()
@@ -478,7 +607,7 @@ SPEC is (AGENT TRANSCRIPT); AGENT is the name it goes by in
                                (current-buffer))
           (aside-test--wait (lambda () (eq aside--state 'failed)) "the failure")
           (should (equal aside--problem
-                         "Codex stopped (exited abnormally with code 1)\nError: no credentials"))
+                         "Codex stopped (exited abnormally with code 1). Send again to restart it.\nError: no credentials"))
           (should (string-search "couldn't start" (aside--mode-line))))
       (mapc #'kill-buffer (aside--popups))
       (delete-directory dir t))))

@@ -165,7 +165,10 @@ NUMBERED keys the choices by digit instead of by letter."
                   (apply #'concat (cl-mapcar (lambda (key choice)
                                                (aside--menu-row key choice width radio current))
                                              keys choices))
-                  (and note (concat "  " (propertize note 'face 'aside-summary) "\n"))
+                  (and note (let ((note (copy-sequence note)))
+                              ;; Appended, so keys in the note keep their keycaps.
+                              (add-face-text-property 0 (length note) 'aside-summary t note)
+                              (concat "  " note "\n")))
                   (propertize (format "  press a key %s C-g cancels " (aside-turn-glyph 'dot))
                               'face 'aside-summary)))
          ;; Room for the whole menu, even in a small popup frame.
@@ -288,6 +291,7 @@ One of `starting', `loading', `reviving', `ready' or `failed'.")
 (defvar-local aside--problem nil "Why the session failed, as text.")
 (defvar-local aside--options nil "The session's configuration options.")
 (defvar-local aside--usage nil "The latest usage report from the agent.")
+(defvar-local aside--context-warned nil "Non-nil once you were told the context is nearly full.")
 (defvar-local aside--turn nil "The current or most recent turn.")
 (defvar-local aside--queued nil "Prompt text waiting for the session to be ready.")
 (defvar-local aside--history nil "Turns replayed while loading a session, newest first.")
@@ -395,7 +399,8 @@ ON-ERROR is called with a description if that fails."
   (when (eq (alist-get agent aside--connections) conn)
     (setf (alist-get agent aside--connections nil t) nil))
   (let* ((detail (aside-acp-stderr-tail conn 3))
-         (problem (concat (format "%s stopped (%s)" (aside--agent-name agent) why)
+         (problem (concat (format "%s stopped (%s). Send again to restart it."
+                                  (aside--agent-name agent) why)
                           (if (and detail (not (string-empty-p detail)))
                               (concat "\n" detail) ""))))
     (aside--release agent nil problem)
@@ -462,22 +467,49 @@ ACP announces many capabilities as empty objects, which count."
 
 ;;;; The prompt
 
+(defun aside--key-hints (pairs)
+  "Return PAIRS of (KEY . WHAT) as a line of key hints."
+  (mapconcat (lambda (pair)
+               (concat (propertize (car pair) 'face 'aside-key)
+                       (propertize (concat " " (cdr pair)) 'face 'aside-placeholder)))
+             pairs
+             (propertize (concat " " (aside-turn-glyph 'dot) " ") 'face 'aside-placeholder)))
+
 (defun aside--placeholder-text ()
   "Return the hint shown in an empty prompt.
-It says how to send and close, and which keys change the session."
-  (let ((send (if (bound-and-true-p evil-local-mode) ":w" "C-c C-c"))
-        (close (if (bound-and-true-p evil-local-mode) ":q" "C-c C-k"))
-        (dot (concat " " (aside-turn-glyph 'dot) " ")))
-    (concat (propertize (format "Ask %s" (aside--agent-name aside--agent))
-                        'face 'aside-placeholder 'cursor t)
-            (propertize (format "   %s sends%s%s closes" send dot close)
-                        'face 'aside-placeholder)
-            "\n" (aside--prompt-bar)
-            (mapconcat (lambda (pair)
-                         (concat (propertize (car pair) 'face 'aside-key)
-                                 (propertize (concat " " (cdr pair)) 'face 'aside-placeholder)))
-                       '(("C-c C-m" . "model") ("C-c C-e" . "effort") ("C-c C-o" . "options"))
-                       (propertize dot 'face 'aside-placeholder)))))
+Before the first prompt it says how to ask and which keys change the
+session; after an answer, how to follow up or start over.  When the
+session couldn't be opened, it says why and how to retry."
+  (let* ((evil (bound-and-true-p evil-local-mode))
+         (send (if evil ":w" "C-c C-c"))
+         (dot (concat " " (aside-turn-glyph 'dot) " "))
+         (name (aside--agent-name aside--agent))
+         (failed (and (eq aside--state 'failed) aside--problem (null aside--turn)))
+         (answered (and aside--turn (aside-turn-finished aside--turn))))
+    (concat
+     (if failed
+         ;; Each line of the reason beside its own bar, which keeps its
+         ;; face; long lines wrap under the text, not under the bar.
+         (let ((lines (split-string (concat (aside-turn-glyph 'failed) " " aside--problem)
+                                    "\n")))
+           (concat (propertize (car lines) 'face 'aside-failed 'cursor t
+                               'wrap-prefix (aside--prompt-bar))
+                   (mapconcat (lambda (line)
+                                (concat "\n" (aside--prompt-bar)
+                                        (propertize line 'face 'aside-failed
+                                                    'wrap-prefix (aside--prompt-bar))))
+                              (cdr lines) "")))
+       (concat (propertize (format (if answered "Follow up with %s" "Ask %s") name)
+                           'face 'aside-placeholder 'cursor t)
+               (propertize (format "   %s sends%s%s hides" send dot (if evil ":q" "C-c C-k"))
+                           'face 'aside-placeholder)))
+     "\n" (aside--prompt-bar)
+     (aside--key-hints
+      (cond (failed `((,send . "retries") ("C-c ?" . "all keys")))
+            (answered '(("C-c C-n" . "new session") ("C-c C-m" . "model")
+                        ("C-c ?" . "all keys")))
+            (t '(("C-c C-m" . "model") ("C-c C-e" . "effort") ("C-c C-o" . "options")
+                 ("C-c ?" . "all keys"))))))))
 
 (defun aside--prompt-bar ()
   "Return the bar drawn beside your prompt.
@@ -595,6 +627,7 @@ Create one, or resume SESSION-ID quietly when given."
   (let ((buffer (current-buffer)))
     (setq aside--state (if session-id 'reviving 'starting)
           aside--problem nil)
+    (aside--update-placeholder)
     (aside--tick-soon)
     (aside--connect
      aside--agent
@@ -643,6 +676,7 @@ SESSION-ID names a session that was resumed rather than created."
          (if session-id nil (aside--wanted-options))
          (lambda ()
            (setq aside--state 'ready)
+           (aside--update-placeholder)
            (force-mode-line-update)
            (aside--flush)))))))
 
@@ -680,6 +714,7 @@ Options can depend on each other, so they are set one at a time."
           (aside--finish-turn nil aside--problem)
         (message "aside: %s" aside--problem))
       (setq aside--queued nil)
+      (aside--update-placeholder)
       (force-mode-line-update))))
 
 (defun aside--explain (problem)
@@ -980,11 +1015,16 @@ Return the files of modified buffers that were left alone."
                            (if (aside-turn-error turn) "failed" "finished")
                            (file-name-nondirectory aside--root))))
       (if (and aside-notify (require 'notifications nil t))
-          (ignore-errors
-            (notifications-notify :title summary
-                                  :body (truncate-string-to-width
-                                         (aside-turn-answer turn) 200 nil nil "…")
-                                  :app-name "Emacs"))
+          (let ((buffer (current-buffer)))
+            (ignore-errors
+              (notifications-notify
+               :title summary
+               :body (truncate-string-to-width (aside-turn-answer turn) 200 nil nil "…")
+               :app-name "Emacs"
+               ;; Clicking the notification brings the popup back.
+               :actions '("default" "Show")
+               :on-action (lambda (_id _key)
+                            (when (buffer-live-p buffer) (aside--show buffer))))))
         (message "%s" summary)))))
 
 ;;;; Hearing from agents
@@ -1012,6 +1052,11 @@ Return the files of modified buffers that were left alone."
      (force-mode-line-update))
     ("usage_update"
      (setq aside--usage update)
+     (let ((share (aside--context-share)))
+       (when (and share (>= share 80) (not aside--context-warned))
+         (setq aside--context-warned t)
+         (message "%s has used %d%% of this session's context; %s starts a new session"
+                  (aside--agent-name aside--agent) share (aside--key-text 'aside-new-session))))
      (force-mode-line-update))
     ((or "available_commands_update" "session_info_update") nil)
     (_
@@ -1269,7 +1314,9 @@ The most recent comes first, and RET on an empty prompt picks it."
       (propertize (concat (aside-turn-glyph 'request) " needs your answer") 'face 'aside-request))
      ((aside--busy-p)
       (concat (propertize (aside-turn-spinner) 'face 'aside-running) " "
-              (propertize (format "working %s" (aside-turn--duration aside--turn))
+              (propertize (format "working %s %s %s stops"
+                                  (aside-turn--duration aside--turn) (aside-turn-glyph 'dot)
+                                  (aside--key-text 'aside-cancel))
                           'face 'aside-summary)))
      ((eq aside--state 'starting)
       (concat (propertize (aside-turn-spinner) 'face 'aside-running) " "
@@ -1281,18 +1328,23 @@ The most recent comes first, and RET on an empty prompt picks it."
       (propertize (concat (aside-turn-glyph 'failed) " couldn't start") 'face 'aside-failed))
      (t (aside--usage-text)))))
 
+(defun aside--context-share ()
+  "Return the percentage of the context window the session uses, or nil."
+  (let ((used (plist-get aside--usage :used))
+        (size (plist-get aside--usage :size)))
+    (and (numberp used) (numberp size) (> size 0)
+         (round (* 100.0 (/ (float used) size))))))
+
 (defun aside--usage-text ()
-  "Return how much of the context window the session uses, and its cost."
-  (let* ((used (plist-get aside--usage :used))
-         (size (plist-get aside--usage :size))
-         (cost (plist-get (plist-get aside--usage :cost) :amount)))
-    (propertize
-     (string-join
-      (delq nil (list (and (numberp used) (numberp size) (> size 0)
-                           (format "%d%% of context" (round (* 100.0 (/ (float used) size)))))
-                      (and (numberp cost) (> cost 0) (format "$%.2f" cost))))
-      "  ")
-     'face 'aside-summary)))
+  "Return how much of the context window the session uses, and its cost.
+From 80% the share stands out, as the agent will soon have to forget."
+  (let ((share (aside--context-share))
+        (cost (plist-get (plist-get aside--usage :cost) :amount)))
+    (concat
+     (and share (propertize (format "%d%% of context" share)
+                            'face (if (>= share 80) 'aside-request 'aside-summary)))
+     (and (numberp cost) (> cost 0)
+          (propertize (format "  $%.2f" cost) 'face 'aside-summary)))))
 
 (defun aside--mode-line-button (text command help)
   "Return TEXT for the mode line, running COMMAND on a click; HELP explains it."
@@ -1375,7 +1427,8 @@ Each run of text keeps its properties."
   "C-c C-o" #'aside-set-option
   "C-c C-n" #'aside-new-session
   "C-c C-r" #'aside-resume
-  "C-c C-x" #'aside-clear-context)
+  "C-c C-x" #'aside-clear-context
+  "C-c ?" #'aside-keys)
 
 (keymap-set aside-turn-file-map "<mouse-1>" #'aside-visit-file)
 (keymap-set aside-turn-file-map "RET" #'aside-visit-file)
@@ -1499,7 +1552,12 @@ With a prefix argument CHOOSE-AGENT, ask which agent's sessions to list."
 (defun aside-dismiss ()
   "Put the popup away; the agent keeps working."
   (interactive nil aside-mode)
-  (aside-frame-hide (aside--popup-buffer)))
+  (let ((busy (aside--busy-p))
+        (name (aside--agent-name aside--agent)))
+    (aside-frame-hide (aside--popup-buffer))
+    (when busy
+      (message "%s keeps working; %s brings the popup back" name
+               (substitute-command-keys "\\<global-map>\\[aside-toggle]")))))
 
 (defun aside-send-and-dismiss ()
   "Send the prompt and put the popup away."
@@ -1532,7 +1590,8 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
       (setq aside--agent (aside--read-agent)
             aside--last-agent aside--agent
             aside--conn nil))
-    (setq aside--session nil aside--turn nil aside--options nil aside--usage nil)
+    (setq aside--session nil aside--turn nil aside--options nil aside--usage nil
+          aside--context-warned nil)
     (erase-buffer)
     (aside--compose)
     (aside--open-session)))
@@ -1555,7 +1614,7 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
                            (mapcar (lambda (o)
                                      (list (aside--capitalized (plist-get o :name))
                                            (plist-get o :value)
-                                           (plist-get o :description)))
+                                           (aside--value-note o)))
                                    (plist-get option :options))
                            (plist-get option :currentValue)
                            (if models "models" "choices")
@@ -1564,8 +1623,25 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
     (aside--set-option-value
      id value
      (lambda ()
-       (message "%s: %s" name
-                (aside--value-name (or (aside--option id) option)))))))
+       (let ((chosen (aside--value-name (or (aside--option id) option)))
+             (effort (aside--option "thought_level")))
+         (if (equal (plist-get option :category) "model")
+             ;; A model may or may not reason; say which, so the effort
+             ;; setting appearing or vanishing is no surprise.
+             (message "%s: %s %s %s" name chosen (aside-turn-glyph 'dot)
+                      (if effort
+                          (format "%s effort (%s changes it)" (aside--value-name effort)
+                                  (aside--key-text 'aside-select-effort))
+                        "no effort setting"))
+           (message "%s: %s" name chosen)))))))
+
+(defun aside--value-note (value)
+  "Return the note for the option VALUE: its description, and if it is free."
+  (let ((free (and (string-match-p "\\bfree\\b" (format "%s" (plist-get value :value)))
+                   ;; No need to say so when the name already does.
+                   (not (string-match-p "\\bfree\\b" (format "%s" (plist-get value :name)))))))
+    (when-let* ((notes (delq nil (list (plist-get value :description) (and free "free")))))
+      (string-join notes (concat " " (aside-turn-glyph 'dot) " ")))))
 
 (defun aside--require-session ()
   "Signal unless this popup's session is open."
@@ -1591,6 +1667,35 @@ With a prefix argument CHOOSE-AGENT, ask which agent to use."
 do; choose one with C-c C-m"
                    (aside--agent-name aside--agent)
                    (or (aside--option-label "model") "this model")))))
+
+(defun aside--key-text (command)
+  "Return the popup's key for COMMAND, as people read it."
+  (if-let* ((keys (where-is-internal command aside-mode-map t)))
+      ;; Emacs writes C-m as RET, which hides the mnemonic.
+      (string-replace "C-c RET" "C-c C-m" (key-description keys))
+    ""))
+
+(defun aside-keys ()
+  "Show what you can do in the popup, and do the one whose key you press."
+  (interactive nil aside-mode)
+  (let ((actions
+         (delq nil
+               (list '("Model" aside-select-model)
+                     '("Effort" aside-select-effort)
+                     '("Options" aside-set-option)
+                     '("New session" aside-new-session)
+                     '("Resume a session" aside-resume)
+                     (and aside--context '("Drop the attached regions" aside-clear-context))
+                     (list (if (aside--busy-p) "Stop the agent" "Hide the popup")
+                           'aside-cancel)))))
+    (call-interactively
+     (aside--menu "Keys"
+                  (mapcar (lambda (action)
+                            (list (car action) (cadr action) (aside--key-text (cadr action))))
+                          actions)
+                  nil
+                  (format "Select a region before %s to send it with the next prompt."
+                          (substitute-command-keys "\\<global-map>\\[aside]"))))))
 
 (defun aside-set-option ()
   "Change one of the session's options, such as its mode or reasoning effort."
